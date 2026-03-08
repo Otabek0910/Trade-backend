@@ -46,13 +46,13 @@ async def lifespan(app: FastAPI):
             ALTER TABLE users ADD COLUMN IF NOT EXISTS status userstatus NOT NULL DEFAULT 'active'
         """))
         # Мигрируем старые is_active → status
-        conn.execute(text("""
-            UPDATE users SET status = CASE
-                WHEN is_active = FALSE THEN 'blocked'::userstatus
-                ELSE 'active'::userstatus
-            END
-            WHERE status = 'active'
-        """))
+        #conn.execute(text("""
+        #    UPDATE users SET status = CASE
+        #        WHEN is_active = FALSE THEN 'blocked'::userstatus
+        #        ELSE 'active'::userstatus
+        #    END
+        #    WHERE status = 'active'
+        #"""))
         conn.commit()
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS debt_payments (
