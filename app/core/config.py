@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     TELEGRAM_WEBAPP_SECRET: str = "YOUR_WEBAPP_SECRET_HERE"  # можно оставить пустым, генерируем позже
     
     # === Безопасность ===
-    SECRET_KEY: str = "super-secret-key-change-in-production-2026"
+    SECRET_KEY: str = "455f151de74ac4576be81a12dfebac1e7d257348ee2eb03b446142e74a0a877a"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 часа
     
