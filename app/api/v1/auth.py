@@ -39,7 +39,7 @@ def validate_telegram_init_data(init_data: str) -> dict | None:
         print(f"❌ Ошибка валидации initData: {e}")
         return None
 
-@router.post("/login")
+@router.post("/login", include_in_schema=True)
 async def login(payload: dict, db: Session = Depends(get_db)):
     init_data_str = payload.get("init_data")
     if not init_data_str:

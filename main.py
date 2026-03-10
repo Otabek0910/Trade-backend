@@ -104,11 +104,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# OPTIONS handler для preflight запросов
-@app.options("/{full_path:path}")
-async def options_handler():
-    return {"ok": True}
-
 # Раздача статических файлов (фото товаров, клиентов, поставщиков)
 os.makedirs("uploads", exist_ok=True)
 app.mount("/static", StaticFiles(directory="uploads"), name="static")
