@@ -90,19 +90,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-app = FastAPI()
-
-origins = [
-    "https://trade-frontend-s36l.onrender.com"
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -115,6 +103,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# OPTIONS handler для preflight запросов
+@app.options("/{full_path:path}")
+async def options_handler():
+    return {"ok": True}
 
 # Раздача статических файлов (фото товаров, клиентов, поставщиков)
 os.makedirs("uploads", exist_ok=True)
