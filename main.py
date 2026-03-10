@@ -7,6 +7,7 @@ import os
 
 from app.db.session import engine
 from app.db.base import Base
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import (
     User, Product, Supplier, Customer,
@@ -89,10 +90,18 @@ async def lifespan(app: FastAPI):
 
     yield
 
-app = FastAPI(
-    title="Trade Telegram MVP",
-    description="Система учёта для Telegram Web App",
-    lifespan=lifespan
+app = FastAPI()
+
+origins = [
+    "https://trade-frontend-s36l.onrender.com"
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 app.add_middleware(
