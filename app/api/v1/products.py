@@ -14,6 +14,7 @@ from app.models.sale import Sale, SaleStatus
 from app.models.sale_item import SaleItem
 from app.models.user import User, UserRole
 from app.core.telegram_auth import get_current_user
+from app.core.telegram_media import upload_photo_to_telegram
 
 router = APIRouter(prefix="/products", tags=["Товары"])
 
@@ -52,6 +53,11 @@ class ProductUpdate(BaseModel):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+def _resolve_photo(url: str | None) -> str | None:
+    if url and url.startswith("tg:"):
+        return f"/media/photo/{url[3:]}"
+    return url
+
 def product_to_dict(p: Product) -> dict:
     unit = getattr(p, 'unit', 'шт') or 'шт'
     unit_value = getattr(p, 'unit_value', None)
@@ -69,7 +75,7 @@ def product_to_dict(p: Product) -> dict:
         "selling_price": float(p.selling_price),
         "min_stock": p.min_stock,
         "current_stock": p.current_stock,
-        "photo_url": getattr(p, 'photo_url', None),
+        "photo_url": _resolve_photo(getattr(p, 'photo_url', None)),
         "low_stock": p.current_stock <= p.min_stock,
         "margin_percent": round(
             (float(p.selling_price) - float(p.purchase_price))
@@ -207,18 +213,10 @@ async def upload_product_photo(
     contents = await file.read()
     if len(contents) > MAX_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Файл больше {MAX_SIZE_MB} МБ")
-    if p.photo_url:
-        old = os.path.join("uploads", p.photo_url.lstrip("/static/"))
-        if os.path.exists(old):
-            os.remove(old)
-    ext = (file.filename or "img").rsplit(".", 1)[-1].lower()
-    filename = f"{product_id}_{uuid.uuid4().hex[:8]}.{ext}"
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    with open(os.path.join(UPLOAD_DIR, filename), "wb") as f:
-        f.write(contents)
-    p.photo_url = f"/static/products/{filename}"
+    file_id = await upload_photo_to_telegram(contents, file.filename or "photo.jpg")
+    p.photo_url = f"tg:{file_id}"
     db.commit()
-    return {"photo_url": p.photo_url}
+    return {"photo_url": f"/media/photo/{file_id}"}
 
 
 @router.delete("/{product_id}/photo", status_code=204)
@@ -231,9 +229,5 @@ def delete_product_photo(
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
-    if p.photo_url:
-        path = os.path.join("uploads", p.photo_url.lstrip("/static/"))
-        if os.path.exists(path):
-            os.remove(path)
-        p.photo_url = None
-        db.commit()
+    p.photo_url = None
+    db.commit()

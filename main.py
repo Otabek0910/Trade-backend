@@ -121,6 +121,7 @@ from app.api.v1.users import router as users_router
 from app.api.v1.expenses import router as expenses_router
 from app.api.v1.returns import router as returns_router
 from app.api.v1.audit import router as audit_router
+from app.api.v1.media import router as media_router
 
 app.include_router(auth_router)
 app.include_router(protected_router)
@@ -136,6 +137,7 @@ app.include_router(users_router)
 app.include_router(expenses_router)
 app.include_router(returns_router)
 app.include_router(audit_router)
+app.include_router(media_router)
 
 @app.get("/")
 async def root():

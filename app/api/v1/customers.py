@@ -14,6 +14,7 @@ from app.models.product import Product
 from app.models.debt_payment import DebtPayment
 from app.models.user import User
 from app.core.telegram_auth import get_current_user
+from app.core.telegram_media import upload_photo_to_telegram
 
 router = APIRouter(prefix="/customers", tags=["Клиенты"])
 
@@ -43,13 +44,18 @@ class LocationUpdate(BaseModel):
     lng: float
 
 
+def _resolve_photo(url: str | None) -> str | None:
+    if url and url.startswith("tg:"):
+        return f"/media/photo/{url[3:]}"
+    return url
+
 def customer_to_dict(c: Customer) -> dict:
     return {
         "id": c.id,
         "name": c.name,
         "phone": c.phone,
         "address": c.address,
-        "photo_url": getattr(c, 'photo_url', None),
+        "photo_url": _resolve_photo(getattr(c, 'photo_url', None)),
         "lat": getattr(c, 'lat', None),
         "lng": getattr(c, 'lng', None),
         "total_purchases": float(c.total_purchases or 0),
@@ -329,29 +335,15 @@ async def upload_customer_photo(
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Клиент не найден")
-
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="Только JPEG, PNG или WebP")
-
     contents = await file.read()
     if len(contents) > MAX_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Файл больше {MAX_SIZE_MB} МБ")
-
-    old_url = getattr(c, 'photo_url', None)
-    if old_url:
-        old_path = os.path.join("uploads", old_url.lstrip("/static/"))
-        if os.path.exists(old_path):
-            os.remove(old_path)
-
-    ext = (file.filename or "img").rsplit(".", 1)[-1].lower()
-    filename = f"{customer_id}_{uuid.uuid4().hex[:8]}.{ext}"
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    with open(os.path.join(UPLOAD_DIR, filename), "wb") as f:
-        f.write(contents)
-
-    c.photo_url = f"/static/customers/{filename}"
+    file_id = await upload_photo_to_telegram(contents, file.filename or "photo.jpg")
+    c.photo_url = f"tg:{file_id}"
     db.commit()
-    return {"photo_url": c.photo_url}
+    return {"photo_url": f"/media/photo/{file_id}"}
 
 
 @router.delete("/{customer_id}/photo", status_code=204)
@@ -363,14 +355,8 @@ def delete_customer_photo(
     c = db.query(Customer).filter(Customer.id == customer_id).first()
     if not c:
         raise HTTPException(status_code=404, detail="Клиент не найден")
-
-    old_url = getattr(c, 'photo_url', None)
-    if old_url:
-        path = os.path.join("uploads", old_url.lstrip("/static/"))
-        if os.path.exists(path):
-            os.remove(path)
-        c.photo_url = None
-        db.commit()
+    c.photo_url = None
+    db.commit()
 
 
 # ─── Локация клиента ──────────────────────────────────────────────────────────

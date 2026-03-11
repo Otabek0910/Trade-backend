@@ -13,6 +13,7 @@ from app.models.receipt import Receipt
 from app.models.supplier_payment import SupplierPayment
 from app.models.user import User
 from app.core.telegram_auth import get_current_user
+from app.core.telegram_media import upload_photo_to_telegram
 
 router = APIRouter(prefix="/suppliers", tags=["Поставщики"])
 
@@ -44,6 +45,11 @@ class PayDebtSchema(BaseModel):
     note: Optional[str] = None
 
 
+def _resolve_photo(url: str | None) -> str | None:
+    if url and url.startswith("tg:"):
+        return f"/media/photo/{url[3:]}"
+    return url
+
 def supplier_to_dict(s: Supplier, db: Session) -> dict:
     products_count = db.query(func.count(Product.id)).filter(Product.supplier_id == s.id).scalar() or 0
     total_receipts = db.query(func.count(Receipt.id)).filter(Receipt.supplier_id == s.id).scalar() or 0
@@ -57,7 +63,7 @@ def supplier_to_dict(s: Supplier, db: Session) -> dict:
         "phone": s.phone,
         "address": s.address,
         "notes": s.notes,
-        "photo_url": getattr(s, 'photo_url', None),
+        "photo_url": _resolve_photo(getattr(s, 'photo_url', None)),
         "lat": getattr(s, 'lat', None),
         "lng": getattr(s, 'lng', None),
         "products_count": products_count,
@@ -244,33 +250,18 @@ async def upload_supplier_photo(
     db: Session = Depends(get_db),
     _: int = Depends(get_current_user),
 ):
-    """Загрузить фото поставщика (JPEG / PNG / WebP, до 5 МБ)"""
     s = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Поставщик не найден")
-
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(status_code=400, detail="Только JPEG, PNG или WebP")
-
     contents = await file.read()
     if len(contents) > MAX_SIZE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"Файл больше {MAX_SIZE_MB} МБ")
-
-    old_url = getattr(s, 'photo_url', None)
-    if old_url:
-        old_path = os.path.join("uploads", old_url.lstrip("/static/"))
-        if os.path.exists(old_path):
-            os.remove(old_path)
-
-    ext = (file.filename or "img").rsplit(".", 1)[-1].lower()
-    filename = f"{supplier_id}_{uuid.uuid4().hex[:8]}.{ext}"
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-    with open(os.path.join(UPLOAD_DIR, filename), "wb") as f:
-        f.write(contents)
-
-    s.photo_url = f"/static/suppliers/{filename}"
+    file_id = await upload_photo_to_telegram(contents, file.filename or "photo.jpg")
+    s.photo_url = f"tg:{file_id}"
     db.commit()
-    return {"photo_url": s.photo_url}
+    return {"photo_url": f"/media/photo/{file_id}"}
 
 
 @router.delete("/{supplier_id}/photo", status_code=204)
@@ -279,18 +270,11 @@ def delete_supplier_photo(
     db: Session = Depends(get_db),
     _: int = Depends(get_current_user),
 ):
-    """Удалить фото поставщика"""
     s = db.query(Supplier).filter(Supplier.id == supplier_id).first()
     if not s:
         raise HTTPException(status_code=404, detail="Поставщик не найден")
-
-    old_url = getattr(s, 'photo_url', None)
-    if old_url:
-        path = os.path.join("uploads", old_url.lstrip("/static/"))
-        if os.path.exists(path):
-            os.remove(path)
-        s.photo_url = None
-        db.commit()
+    s.photo_url = None
+    db.commit()
 
 
 # ─── Локация поставщика ───────────────────────────────────────────────────────

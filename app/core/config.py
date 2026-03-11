@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     
     # === Telegram ===
     TELEGRAM_BOT_TOKEN: str = "8692228116:AAHqzuraz-QFld4ClYf52Es13oRGFy2EUXs"
+    TELEGRAM_MEDIA_CHANNEL: str = "-1003777159608"  # приватный канал для хранения фото
     TELEGRAM_WEBAPP_SECRET: str = "YOUR_WEBAPP_SECRET_HERE"  # можно оставить пустым, генерируем позже
     
     # === Безопасность ===
