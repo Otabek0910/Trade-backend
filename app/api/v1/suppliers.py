@@ -107,6 +107,8 @@ def get_supplier(
                 "current_stock": p.current_stock,
                 "purchase_price": float(p.purchase_price),
                 "selling_price": float(p.selling_price),
+                "unit": p.unit or "шт",
+                "unit_value": p.unit_value,
             }
             for p in s.products
         ],
