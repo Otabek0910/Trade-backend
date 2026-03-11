@@ -96,6 +96,8 @@ def get_supplier(
                 "purchase_price": float(r.purchase_price),
                 "total": float(r.purchase_price) * r.quantity,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
+                "unit": r.product.unit or "шт" if r.product else "шт",
+                "unit_value": r.product.unit_value if r.product else None,
             }
             for r in receipts
         ],
