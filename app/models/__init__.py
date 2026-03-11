@@ -9,5 +9,6 @@ from .return_model import Return
 from .expense import Expense
 from .audit import AuditLog
 from app.models.debt_payment import DebtPayment
+from app.models.supplier_payment import SupplierPayment
 
 __all__ = ["User", "Product", "Supplier", "Customer", "Receipt", "Sale", "SaleItem", "Return", "Expense", "AuditLog", "DebtPayment", "SupplierPayment"]
