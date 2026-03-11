@@ -7,81 +7,79 @@ import os
 
 from app.db.session import engine
 from app.db.base import Base
-from fastapi.middleware.cors import CORSMiddleware
 
 from app.models import (
     User, Product, Supplier, Customer,
     Receipt, Sale, SaleItem, Return,
-    Expense, AuditLog
+    Expense, AuditLog, SupplierPayment
 )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Создаём таблицы...")
-    Base.metadata.create_all(bind=engine)
+    try:
+        Base.metadata.create_all(bind=engine)
 
-    # Автоматические миграции новых колонок — безопасно (IF NOT EXISTS)
-    with engine.connect() as conn:
-        # Products
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_url VARCHAR"))
-        # Customers
-        conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS photo_url VARCHAR"))
-        conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS lat FLOAT"))
-        conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS lng FLOAT"))
-        # Suppliers
-        conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS lat FLOAT"))
-        conn.execute(text("ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS lng FLOAT"))
-        conn.commit()
-        conn.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS is_reverted BOOLEAN DEFAULT FALSE"))
-        conn.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS reverted_at TIMESTAMPTZ"))
-        conn.execute(text("ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS reverted_by INTEGER"))
-        conn.execute(text("ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE"))
-        # Добавляем статус пользователя
-        conn.execute(text("""
-            DO $$ BEGIN
+        migrations = [
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS photo_url VARCHAR",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS photo_url VARCHAR",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS lat FLOAT",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS lng FLOAT",
+            "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS lat FLOAT",
+            "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS lng FLOAT",
+            "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS photo_url VARCHAR",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS is_reverted BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS reverted_at TIMESTAMPTZ",
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS reverted_by INTEGER",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+            """DO $$ BEGIN
                 CREATE TYPE userstatus AS ENUM ('pending', 'active', 'blocked');
             EXCEPTION WHEN duplicate_object THEN NULL;
-            END $$
-        """))
-        conn.execute(text("""
-            ALTER TABLE users ADD COLUMN IF NOT EXISTS status userstatus NOT NULL DEFAULT 'active'
-        """))
-
-        conn.execute(text("""
-        ALTER TABLE users
-        ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE
-        """))
-        
-        # Мигрируем старые is_active → status
-        conn.execute(text("""
-            UPDATE users SET status = CASE
+            END $$""",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS status userstatus NOT NULL DEFAULT 'active'",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+            """UPDATE users SET status = CASE
                 WHEN is_active = FALSE THEN 'blocked'::userstatus
                 ELSE 'active'::userstatus
-            END
-            WHERE status = 'active'
-        """))
-        
-        conn.commit()
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS debt_payments (
+            END WHERE status = 'active'""",
+            """CREATE TABLE IF NOT EXISTS debt_payments (
                 id SERIAL PRIMARY KEY,
                 customer_id INTEGER NOT NULL REFERENCES customers(id),
                 amount NUMERIC(12,2) NOT NULL,
                 note VARCHAR,
                 created_by INTEGER NOT NULL REFERENCES users(id),
                 created_at TIMESTAMPTZ DEFAULT NOW()
-            )
-        """))
-        conn.commit()
+            )""",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS brand VARCHAR",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS unit VARCHAR DEFAULT 'шт'",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS unit_value FLOAT",
+            # Долг поставщику
+            "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS total_debt NUMERIC(12,2) NOT NULL DEFAULT 0",
+            "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(12,2) NOT NULL DEFAULT 0",
+            "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS debt NUMERIC(12,2) NOT NULL DEFAULT 0",
+            """CREATE TABLE IF NOT EXISTS supplier_payments (
+                id SERIAL PRIMARY KEY,
+                supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+                amount NUMERIC(12,2) NOT NULL,
+                note VARCHAR,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )""",
+        ]
 
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS brand VARCHAR"))
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS unit VARCHAR DEFAULT 'шт'"))
-        conn.execute(text("ALTER TABLE products ADD COLUMN IF NOT EXISTS unit_value FLOAT"))
-        conn.commit()
+        with engine.connect() as conn:
+            for sql in migrations:
+                try:
+                    conn.execute(text(sql))
+                    conn.commit()
+                except Exception as e:
+                    print(f"⚠️ Миграция пропущена: {e}")
+                    conn.rollback()
 
-    print("✅ Таблицы и миграции готовы!")
-
-
+        print("✅ Таблицы и миграции готовы!")
+    except Exception as e:
+        print(f"❌ Ошибка при старте БД: {e}")
+        print("⚠️ Приложение запускается без миграций")
 
     # Папки для загрузок
     os.makedirs("uploads/products", exist_ok=True)
@@ -95,8 +93,8 @@ app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://trade-frontend-s36l.onrender.com",   # твой фронтенд
-        "http://localhost:5173",                     # для локальной разработки
+        "https://trade-frontend-s36l.onrender.com",
+        "http://localhost:5173",
         "http://127.0.0.1:5173"
     ],
     allow_credentials=True,

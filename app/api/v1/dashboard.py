@@ -11,6 +11,7 @@ from app.models.customer import Customer
 from app.models.expense import Expense
 from app.models.return_model import Return
 from app.models.user import User
+from app.models.supplier import Supplier
 from app.core.telegram_auth import get_current_user
 
 router = APIRouter(prefix="/dashboard", tags=["Дашборд"])
@@ -275,6 +276,7 @@ def get_dashboard(
         cash_alltime += float(s.paid_amount) - cash_refunded
 
     total_customer_debt = float(db.query(func.sum(Customer.total_debt)).scalar() or 0)
+    total_supplier_debt = float(db.query(func.sum(Supplier.total_debt)).scalar() or 0)
     stock_value = float(
         db.query(func.sum(Product.purchase_price * Product.current_stock)).scalar() or 0
     )
@@ -342,6 +344,7 @@ def get_dashboard(
         "returns_month_total": round(returns_month_total, 0),
         "cash_alltime": round(cash_alltime, 0),
         "total_customer_debt": round(total_customer_debt, 0),
+        "total_supplier_debt": round(total_supplier_debt, 0),
         "stock_value": round(stock_value, 0),
         "low_stock_count": db.query(Product).filter(Product.current_stock <= Product.min_stock).count(),
         "low_stock_items": [

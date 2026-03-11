@@ -3,12 +3,15 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
 from typing import Optional
+from decimal import Decimal
 import os, uuid
 
 from app.db.session import get_db
 from app.models.supplier import Supplier
 from app.models.product import Product
 from app.models.receipt import Receipt
+from app.models.supplier_payment import SupplierPayment
+from app.models.user import User
 from app.core.telegram_auth import get_current_user
 
 router = APIRouter(prefix="/suppliers", tags=["Поставщики"])
@@ -36,6 +39,10 @@ class LocationUpdate(BaseModel):
     lat: float
     lng: float
 
+class PayDebtSchema(BaseModel):
+    amount: Decimal
+    note: Optional[str] = None
+
 
 def supplier_to_dict(s: Supplier, db: Session) -> dict:
     products_count = db.query(func.count(Product.id)).filter(Product.supplier_id == s.id).scalar() or 0
@@ -56,6 +63,7 @@ def supplier_to_dict(s: Supplier, db: Session) -> dict:
         "products_count": products_count,
         "total_receipts": total_receipts,
         "total_purchased": float(total_purchased),
+        "total_debt": float(getattr(s, 'total_debt', 0) or 0),
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }
 
@@ -95,6 +103,8 @@ def get_supplier(
                 "quantity": r.quantity,
                 "purchase_price": float(r.purchase_price),
                 "total": float(r.purchase_price) * r.quantity,
+                "paid_amount": float(getattr(r, 'paid_amount', 0) or 0),
+                "debt": float(getattr(r, 'debt', 0) or 0),
                 "created_at": r.created_at.isoformat() if r.created_at else None,
                 "unit": r.product.unit or "шт" if r.product else "шт",
                 "unit_value": r.product.unit_value if r.product else None,
@@ -114,6 +124,62 @@ def get_supplier(
             }
             for p in s.products
         ],
+        "debt_payments": [
+            {
+                "id": p.id,
+                "amount": float(p.amount),
+                "note": p.note,
+                "user_name": p.user.full_name if p.user else "—",
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in db.query(SupplierPayment)
+                .filter(SupplierPayment.supplier_id == supplier_id)
+                .order_by(SupplierPayment.created_at.desc())
+                .limit(20).all()
+        ],
+    }
+
+
+@router.post("/{supplier_id}/pay-debt")
+def pay_supplier_debt(
+    supplier_id: int,
+    data: PayDebtSchema,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """Погасить долг поставщику"""
+    s = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Поставщик не найден")
+
+    current_debt = float(s.total_debt or 0)
+    amount = float(data.amount)
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Сумма должна быть больше 0")
+    if amount > current_debt:
+        raise HTTPException(status_code=400, detail=f"Сумма больше долга ({current_debt:,.0f} сум)")
+
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    s.total_debt = round(current_debt - amount, 2)
+
+    payment = SupplierPayment(
+        supplier_id=supplier_id,
+        amount=amount,
+        note=data.note,
+        created_by=user.id,
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(s)
+
+    return {
+        "message": f"✅ Оплачено {amount:,.0f} сум. Остаток долга: {float(s.total_debt):,.0f} сум",
+        "total_debt": float(s.total_debt),
+        "payment_id": payment.id,
     }
 
 

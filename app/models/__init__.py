@@ -10,4 +10,4 @@ from .expense import Expense
 from .audit import AuditLog
 from app.models.debt_payment import DebtPayment
 
-__all__ = ["User", "Product", "Supplier", "Customer", "Receipt", "Sale", "SaleItem", "Return", "Expense", "AuditLog", "DebtPayment"]
+__all__ = ["User", "Product", "Supplier", "Customer", "Receipt", "Sale", "SaleItem", "Return", "Expense", "AuditLog", "DebtPayment", "SupplierPayment"]

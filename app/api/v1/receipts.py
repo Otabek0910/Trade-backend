@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from decimal import Decimal
+from typing import Optional
 
 from app.db.session import get_db
 from app.models.receipt import Receipt
@@ -14,16 +15,13 @@ from app.core.telegram_auth import get_current_user
 router = APIRouter(prefix="/receipts", tags=["Приёмка товара"])
 
 
-# ─── Schemas ─────────────────────────────────────────────────────
-
 class ReceiptCreate(BaseModel):
     product_id: int
     supplier_id: int
     quantity: int
-    purchase_price: Decimal  # цена этой партии
+    purchase_price: Decimal
+    paid_amount: Optional[Decimal] = None  # если None — значит оплачено полностью
 
-
-# ─── Endpoints ───────────────────────────────────────────────────
 
 @router.post("")
 def create_receipt(
@@ -31,8 +29,6 @@ def create_receipt(
     db: Session = Depends(get_db),
     telegram_id: int = Depends(get_current_user),
 ):
-    """Приёмка товара — увеличивает остаток и пересчитывает среднюю цену"""
-
     product = db.query(Product).filter(Product.id == data.product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Товар не найден")
@@ -45,6 +41,11 @@ def create_receipt(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
 
+    total_cost = float(data.purchase_price) * data.quantity
+    paid = float(data.paid_amount) if data.paid_amount is not None else total_cost
+    paid = max(0.0, min(paid, total_cost))  # не может быть меньше 0 или больше total
+    debt = round(total_cost - paid, 2)
+
     # Средневзвешенная цена закупки
     old_stock = product.current_stock
     old_price = float(product.purchase_price)
@@ -52,9 +53,7 @@ def create_receipt(
     new_price = float(data.purchase_price)
 
     if old_stock + new_qty > 0:
-        weighted_avg = (
-            (old_stock * old_price) + (new_qty * new_price)
-        ) / (old_stock + new_qty)
+        weighted_avg = (old_stock * old_price + new_qty * new_price) / (old_stock + new_qty)
         product.purchase_price = round(weighted_avg, 2)
 
     product.current_stock = old_stock + new_qty
@@ -64,45 +63,53 @@ def create_receipt(
         supplier_id=data.supplier_id,
         quantity=data.quantity,
         purchase_price=data.purchase_price,
+        paid_amount=round(paid, 2),
+        debt=debt,
         storekeeper_id=user.id,
     )
     db.add(receipt)
 
-    # Журнал событий (сохраняем старую цену для возможности отмены)
+    # Обновляем долг поставщику
+    if debt > 0:
+        supplier.total_debt = float(supplier.total_debt or 0) + debt
+
     audit = AuditLog(
         user_id=user.id,
         action="create_receipt",
         entity="receipt",
-        entity_id=None,  # получим после flush
-        old_values={
-            "purchase_price": old_price,
-            "old_stock": old_stock,
-        },
+        entity_id=None,
+        old_values={"purchase_price": old_price, "old_stock": old_stock},
         new_values={
             "product_id": data.product_id,
             "product_name": product.name,
             "supplier_name": supplier.name,
             "quantity": data.quantity,
             "purchase_price": float(data.purchase_price),
+            "paid_amount": paid,
+            "debt": debt,
             "new_stock": product.current_stock,
         },
     )
     db.add(audit)
-    db.flush()  # получаем receipt.id и audit.id
+    db.flush()
     audit.entity_id = receipt.id
 
     db.commit()
     db.refresh(receipt)
 
+    debt_msg = f" · Долг поставщику: {debt:,.0f} сум" if debt > 0 else ""
     return {
         "id": receipt.id,
         "product_name": product.name,
         "supplier_name": supplier.name,
         "quantity": data.quantity,
         "purchase_price": float(data.purchase_price),
+        "total_cost": total_cost,
+        "paid_amount": paid,
+        "debt": debt,
         "new_stock": product.current_stock,
         "new_avg_price": float(product.purchase_price),
-        "message": f"✅ Принято {data.quantity} шт. Остаток: {product.current_stock}",
+        "message": f"✅ Принято {data.quantity} шт. Остаток: {product.current_stock}{debt_msg}",
     }
 
 
@@ -112,11 +119,7 @@ def get_receipts(
     db: Session = Depends(get_db),
     _: int = Depends(get_current_user),
 ):
-    """История приёмок"""
-    receipts = db.query(Receipt).order_by(
-        Receipt.created_at.desc()
-    ).limit(limit).all()
-
+    receipts = db.query(Receipt).order_by(Receipt.created_at.desc()).limit(limit).all()
     return [
         {
             "id": r.id,
@@ -124,6 +127,8 @@ def get_receipts(
             "supplier_name": r.supplier.name,
             "quantity": r.quantity,
             "purchase_price": float(r.purchase_price),
+            "paid_amount": float(getattr(r, 'paid_amount', 0) or 0),
+            "debt": float(getattr(r, 'debt', 0) or 0),
             "storekeeper": r.storekeeper.full_name,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         }
