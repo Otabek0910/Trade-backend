@@ -46,7 +46,7 @@ class LocationUpdate(BaseModel):
 
 def _resolve_photo(url: str | None) -> str | None:
     if url and url.startswith("tg:"):
-        return f"/media/photo/{url[3:]}"
+        return f"https://trade-backend-k71d.onrender.com/media/photo/{url[3:]}"
     return url
 
 def customer_to_dict(c: Customer) -> dict:
