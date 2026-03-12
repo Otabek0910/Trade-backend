@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS total_debt NUMERIC(12,2) NOT NULL DEFAULT 0",
             "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(12,2) NOT NULL DEFAULT 0",
             "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS debt NUMERIC(12,2) NOT NULL DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS needs_reauth BOOLEAN NOT NULL DEFAULT FALSE",
             """CREATE TABLE IF NOT EXISTS supplier_payments (
                 id SERIAL PRIMARY KEY,
                 supplier_id INTEGER NOT NULL REFERENCES suppliers(id),

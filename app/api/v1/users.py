@@ -60,6 +60,7 @@ def approve_user(
     if target.status != UserStatus.pending:
         raise HTTPException(status_code=400, detail="Пользователь не в статусе pending")
     target.status = UserStatus.active
+    target.needs_reauth = True
     db.commit()
     db.refresh(target)
     return user_to_dict(target)
@@ -140,6 +141,7 @@ def update_user(
 
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(target, field, value)
+    target.needs_reauth = True
     db.commit()
     db.refresh(target)
     return user_to_dict(target)
