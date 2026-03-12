@@ -103,6 +103,8 @@ def delete_user(
         raise HTTPException(status_code=400, detail="Нельзя удалить себя")
     if target.role == UserRole.developer and current.role != UserRole.developer:
         raise HTTPException(status_code=403, detail="Нельзя удалить разработчика")
+    if target.role == UserRole.owner_business and current.role != UserRole.developer:
+        raise HTTPException(status_code=403, detail="Нельзя удалить другого владельца бизнеса")
 
     has_sales = db.query(Sale).filter(Sale.seller_id == target.id).first() is not None
     if has_sales:
@@ -133,6 +135,8 @@ def update_user(
         raise HTTPException(status_code=400, detail="Нельзя изменить свою учётную запись")
     if target.role == UserRole.developer and current.role != UserRole.developer:
         raise HTTPException(status_code=403, detail="Нельзя изменить разработчика")
+    if target.role == UserRole.owner_business and current.role != UserRole.developer:
+        raise HTTPException(status_code=403, detail="Нельзя изменить другого владельца бизнеса")
 
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(target, field, value)

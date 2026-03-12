@@ -381,16 +381,50 @@ def get_dashboard(
 @router.get("/quick-stats")
 def quick_stats(
     db: Session = Depends(get_db),
-    _: int = Depends(get_current_user),
+    telegram_id: int = Depends(get_current_user),
 ):
+    from app.models.user import UserRole
     today = date.today()
-    stats = get_period_stats(db, today, today)
-    total_debt = float(db.query(func.sum(Customer.total_debt)).scalar() or 0)
     low_stock = db.query(Product).filter(Product.current_stock <= Product.min_stock).count()
+
+    current_user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    role = current_user.role if current_user else None
+
+    # Владелец и девелопер — полная статистика бизнеса
+    if role in (UserRole.owner_business, UserRole.developer):
+        stats = get_period_stats(db, today, today)
+        total_debt = float(db.query(func.sum(Customer.total_debt)).scalar() or 0)
+        return {
+            "today_revenue": stats["revenue"],
+            "today_sales": stats["sales_count"],
+            "total_debt": round(total_debt, 0),
+            "low_stock_count": low_stock,
+        }
+
+    # Продавец — только его личные продажи сегодня и долги его клиентов
+    if role == UserRole.seller and current_user:
+        my_sales = db.query(Sale).filter(
+            cast(Sale.created_at, Date) == today,
+            Sale.seller_id == current_user.id,
+            Sale.status == SaleStatus.completed,
+        ).all()
+        my_revenue = sum(float(s.total_amount) for s in my_sales)
+        my_debt = sum(
+            max(0.0, float(s.total_amount) - float(s.paid_amount))
+            for s in my_sales
+        )
+        return {
+            "today_revenue": round(my_revenue, 0),
+            "today_sales": len(my_sales),
+            "total_debt": round(my_debt, 0),
+            "low_stock_count": low_stock,
+        }
+
+    # Кладовщик — складская статистика
     return {
-        "today_revenue": stats["revenue"],
-        "today_sales": stats["sales_count"],
-        "total_debt": round(total_debt, 0),
+        "today_revenue": 0,
+        "today_sales": 0,
+        "total_debt": 0,
         "low_stock_count": low_stock,
     }
 
