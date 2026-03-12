@@ -134,3 +134,45 @@ def get_receipts(
         }
         for r in receipts
     ]
+
+@router.get("/product/{product_id}")
+def get_product_price_history(
+    product_id: int,
+    page: int = 1,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    _: int = Depends(get_current_user),
+):
+    """История приёмок и изменений цены закупки по товару"""
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Товар не найден")
+
+    total = db.query(Receipt).filter(Receipt.product_id == product_id).count()
+    receipts = (
+        db.query(Receipt)
+        .filter(Receipt.product_id == product_id)
+        .order_by(Receipt.created_at.desc())
+        .offset((page - 1) * limit)
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit,
+        "current_price": float(product.purchase_price),
+        "items": [
+            {
+                "id": r.id,
+                "quantity": r.quantity,
+                "purchase_price": float(r.purchase_price),
+                "supplier_name": r.supplier.name if r.supplier else "—",
+                "storekeeper": r.storekeeper.full_name if r.storekeeper else "—",
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in receipts
+        ],
+    }
