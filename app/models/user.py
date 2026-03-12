@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, BigInteger, DateTime, Enum
+from sqlalchemy import Column, Integer, String, BigInteger, DateTime, Enum, Boolean
 from sqlalchemy.sql import func
 from app.db.base import Base
 import enum
@@ -24,3 +24,4 @@ class User(Base):
     role = Column(Enum(UserRole), nullable=False, default=UserRole.seller)
     status = Column(Enum(UserStatus), nullable=False, default=UserStatus.pending)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    needs_reauth = Column(Boolean, default=False, nullable=False, server_default="false")
