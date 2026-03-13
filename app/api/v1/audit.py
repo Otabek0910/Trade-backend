@@ -30,7 +30,6 @@ from app.models.customer import Customer
 from app.models.receipt import Receipt
 from app.models.expense import Expense
 from app.models.return_model import Return
-from app.models.supplier import Supplier
 from app.core.telegram_auth import get_current_user
 
 router = APIRouter(prefix="/audit", tags=["Журнал событий"])
@@ -205,7 +204,7 @@ def _revert_sale(entry: AuditLog, db: Session):
 
 
 def _revert_receipt(entry: AuditLog, db: Session):
-    """Отменить приёмку: уменьшить остаток, восстановить цену закупки, убрать долг"""
+    """Отменить приёмку: уменьшить остаток, восстановить цену закупки"""
     receipt = db.query(Receipt).filter(Receipt.id == entry.entity_id).first()
     if not receipt:
         raise HTTPException(status_code=404, detail="Приёмка не найдена или уже удалена")
@@ -224,13 +223,6 @@ def _revert_receipt(entry: AuditLog, db: Session):
         # Восстанавливаем цену закупки до приёмки
         if entry.old_values and "purchase_price" in entry.old_values:
             product.purchase_price = entry.old_values["purchase_price"]
-
-    # Восстанавливаем долг поставщику — убираем ту часть что была в долг
-    debt = float(getattr(receipt, 'debt', 0) or 0)
-    if debt > 0:
-        supplier = db.query(Supplier).filter(Supplier.id == receipt.supplier_id).first()
-        if supplier:
-            supplier.total_debt = max(0.0, float(supplier.total_debt or 0) - debt)
 
     db.delete(receipt)
 
@@ -285,3 +277,24 @@ def _revert_return(entry: AuditLog, db: Session):
             sale.status = SaleStatus.completed
 
     db.delete(ret)
+
+# ─── DELETE /audit/{id} — только для разработчика ────────────────────────────
+
+@router.delete("/{audit_id}")
+def hard_delete_audit(
+    audit_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """Полное удаление записи из журнала. Только для developer."""
+    user = db.query(User).filter(User.telegram_id == int(telegram_id)).first()
+    if not user or user.role != UserRole.developer:
+        raise HTTPException(status_code=403, detail="Только для разработчика")
+
+    entry = db.query(AuditLog).filter(AuditLog.id == audit_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="Запись не найдена")
+
+    db.delete(entry)
+    db.commit()
+    return {"deleted": True}

@@ -1,43 +1,39 @@
-# app/api/v1/products.py
-import os
-import uuid
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
 from pydantic import BaseModel
-from typing import Optional
 from decimal import Decimal
+from typing import Optional
+import os, uuid, shutil
 
 from app.db.session import get_db
 from app.models.product import Product
-from app.models.sale import Sale, SaleStatus
 from app.models.sale_item import SaleItem
+from app.models.receipt import Receipt
+from app.models.return_model import Return
+from app.models.audit import AuditLog
 from app.models.user import User, UserRole
 from app.core.telegram_auth import get_current_user
-from app.core.telegram_media import upload_photo_to_telegram
 
 router = APIRouter(prefix="/products", tags=["Товары"])
 
 UPLOAD_DIR = "uploads/products"
-ALLOWED_TYPES = {"image/jpeg", "image/png", "image/webp"}
-MAX_SIZE_MB = 5
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-UNITS = ["шт", "л", "кг", "м", "м²", "уп", "пар", "рул"]
-
-
-# ─── Schemas ──────────────────────────────────────────────────────────────────
 
 class ProductCreate(BaseModel):
     sku: str
     name: str
     category: Optional[str] = None
-    brand: Optional[str] = None          # ← Марка: Mobil, Shell, Castrol
-    unit: Optional[str] = "шт"          # ← Единица: шт/л/кг/м/уп...
-    unit_value: Optional[float] = None  # ← Объём упаковки: 3 (для канистры 3л)
+    brand: Optional[str] = None
+    unit: Optional[str] = "шт"
+    unit_value: Optional[float] = None
     supplier_id: Optional[int] = None
     purchase_price: Decimal
     selling_price: Decimal
     min_stock: int = 5
+    current_stock: int = 0
+
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
@@ -51,183 +47,242 @@ class ProductUpdate(BaseModel):
     min_stock: Optional[int] = None
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _resolve_photo(url: str | None) -> str | None:
-    if url and url.startswith("tg:"):
-        return f"https://trade-backend-k71d.onrender.com/media/photo/{url[3:]}"
-    return url
-
 def product_to_dict(p: Product) -> dict:
-    unit = getattr(p, 'unit', 'шт') or 'шт'
-    unit_value = getattr(p, 'unit_value', None)
+    from app.models.supplier import Supplier
+    from app.db.session import get_db as _get_db
     return {
         "id": p.id,
         "sku": p.sku,
         "name": p.name,
         "category": p.category,
-        "brand": getattr(p, 'brand', None),
-        "unit": unit,
-        "unit_value": unit_value,
+        "brand": p.brand,
+        "unit": p.unit,
+        "unit_value": p.unit_value,
         "supplier_id": p.supplier_id,
         "supplier_name": p.supplier.name if p.supplier else None,
         "purchase_price": float(p.purchase_price),
         "selling_price": float(p.selling_price),
         "min_stock": p.min_stock,
         "current_stock": p.current_stock,
-        "photo_url": _resolve_photo(getattr(p, 'photo_url', None)),
+        "photo_url": p.photo_url,
         "low_stock": p.current_stock <= p.min_stock,
-        "margin_percent": round(
-            (float(p.selling_price) - float(p.purchase_price))
-            / float(p.purchase_price) * 100, 1
-        ) if float(p.purchase_price) > 0 else 0,
+        "created_at": p.created_at.isoformat() if p.created_at else None,
     }
 
-def require_stock_access(telegram_id: int, db: Session) -> User:
+
+def get_current_user_obj(telegram_id: int, db: Session) -> User:
     user = db.query(User).filter(User.telegram_id == int(telegram_id)).first()
-    if not user or user.role not in (UserRole.developer, UserRole.owner_business, UserRole.storekeeper):
-        raise HTTPException(status_code=403, detail="Нет доступа")
+    if not user:
+        raise HTTPException(status_code=401, detail="Пользователь не найден")
     return user
 
 
-# ─── Endpoints ────────────────────────────────────────────────────────────────
-
-@router.get("/units")
-def get_units():
-    """Список доступных единиц измерения"""
-    return UNITS
-
-
+# ─── GET /products ─────────────────────────────────────────────────────────
 @router.get("")
-def get_products(
+def list_products(
     search: Optional[str] = None,
-    category: Optional[str] = None,
     low_stock: Optional[bool] = None,
     db: Session = Depends(get_db),
-    _: int = Depends(get_current_user),
+    telegram_id: int = Depends(get_current_user),
 ):
+    get_current_user_obj(telegram_id, db)
     q = db.query(Product)
     if search:
-        q = q.filter(or_(
-            Product.name.ilike(f"%{search}%"),
-            Product.sku.ilike(f"%{search}%"),
-            Product.brand.ilike(f"%{search}%"),  # ← поиск по марке тоже
-        ))
-    if category:
-        q = q.filter(Product.category == category)
-    if low_stock is True:
+        like = f"%{search}%"
+        q = q.filter(
+            Product.name.ilike(like) |
+            Product.sku.ilike(like) |
+            Product.brand.ilike(like) |
+            Product.category.ilike(like)
+        )
+    if low_stock:
         q = q.filter(Product.current_stock <= Product.min_stock)
     products = q.order_by(Product.name).all()
-    return {"total": len(products), "items": [product_to_dict(p) for p in products]}
+    return {"items": [product_to_dict(p) for p in products]}
 
 
-@router.get("/categories")
-def get_categories(db: Session = Depends(get_db), _: int = Depends(get_current_user)):
-    rows = db.query(Product.category).filter(Product.category.isnot(None)).distinct().all()
-    return [r[0] for r in rows if r[0]]
-
-
-@router.get("/brands")
-def get_brands(db: Session = Depends(get_db), _: int = Depends(get_current_user)):
-    """Список всех марок для фильтрации"""
-    rows = db.query(Product.brand).filter(Product.brand.isnot(None)).distinct().all()
-    return [r[0] for r in rows if r[0]]
-
-
+# ─── GET /products/{id} ────────────────────────────────────────────────────
 @router.get("/{product_id}")
-def get_product(product_id: int, db: Session = Depends(get_db), _: int = Depends(get_current_user)):
+def get_product(
+    product_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    get_current_user_obj(telegram_id, db)
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
     return product_to_dict(p)
 
 
+# ─── POST /products ────────────────────────────────────────────────────────
 @router.post("")
-def create_product(data: ProductCreate, db: Session = Depends(get_db), _: int = Depends(get_current_user)):
-    if db.query(Product).filter(Product.sku == data.sku).first():
-        raise HTTPException(status_code=400, detail="SKU уже существует")
-    if data.unit and data.unit not in UNITS:
-        raise HTTPException(status_code=400, detail=f"Единица должна быть одной из: {', '.join(UNITS)}")
-    product = Product(**data.model_dump())
-    db.add(product)
-    db.commit()
-    db.refresh(product)
-    return product_to_dict(product)
+def create_product(
+    data: ProductCreate,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    user = get_current_user_obj(telegram_id, db)
+    if user.role not in (UserRole.developer, UserRole.owner_business, UserRole.storekeeper):
+        raise HTTPException(status_code=403, detail="Нет доступа")
 
+    exists = db.query(Product).filter(Product.sku == data.sku).first()
+    if exists:
+        raise HTTPException(status_code=400, detail=f"Артикул «{data.sku}» уже занят")
 
-@router.patch("/{product_id}")
-def update_product(product_id: int, data: ProductUpdate, db: Session = Depends(get_db), _: int = Depends(get_current_user)):
-    p = db.query(Product).filter(Product.id == product_id).first()
-    if not p:
-        raise HTTPException(status_code=404, detail="Товар не найден")
-    if data.unit and data.unit not in UNITS:
-        raise HTTPException(status_code=400, detail=f"Единица должна быть одной из: {', '.join(UNITS)}")
-    for field, value in data.model_dump(exclude_none=True).items():
-        setattr(p, field, value)
+    p = Product(**data.model_dump())
+    db.add(p)
     db.commit()
     db.refresh(p)
     return product_to_dict(p)
 
 
+# ─── PATCH /products/{id} ──────────────────────────────────────────────────
+@router.patch("/{product_id}")
+def update_product(
+    product_id: int,
+    data: ProductUpdate,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    user = get_current_user_obj(telegram_id, db)
+    if user.role not in (UserRole.developer, UserRole.owner_business, UserRole.storekeeper):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
+    p = db.query(Product).filter(Product.id == product_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Товар не найден")
+
+    # storekeeper не может менять цены
+    if user.role == UserRole.storekeeper:
+        data.purchase_price = None
+        data.selling_price = None
+
+    for field, value in data.model_dump(exclude_none=True).items():
+        setattr(p, field, value)
+
+    db.commit()
+    db.refresh(p)
+    return product_to_dict(p)
+
+
+# ─── DELETE /products/{id} ─────────────────────────────────────────────────
 @router.delete("/{product_id}")
 def delete_product(
     product_id: int,
     db: Session = Depends(get_db),
-    _: int = Depends(get_current_user),
+    telegram_id: int = Depends(get_current_user),
 ):
+    user = get_current_user_obj(telegram_id, db)
+    if user.role not in (UserRole.developer, UserRole.owner_business):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
-    active = (
-        db.query(SaleItem)
-        .join(Sale, Sale.id == SaleItem.sale_id)
-        .filter(SaleItem.product_id == product_id, Sale.status == SaleStatus.completed)
-        .first()
-    )
-    if active:
-        raise HTTPException(status_code=400, detail="Нельзя удалить товар с активными продажами")
-    if p.photo_url:
-        path = os.path.join("uploads", p.photo_url.lstrip("/static/"))
-        if os.path.exists(path):
-            os.remove(path)
-    db.delete(p)
-    db.commit()
-    return {"message": "✅ Товар удалён"}
+
+    if user.role == UserRole.developer:
+        # Разработчик: полное каскадное удаление всех связанных записей
+        db.query(AuditLog).filter(
+            AuditLog.entity == "product",
+            AuditLog.entity_id == product_id,
+        ).delete(synchronize_session=False)
+
+        # Удаляем audit записи связанных продаж
+        sale_items = db.query(SaleItem).filter(SaleItem.product_id == product_id).all()
+        for si in sale_items:
+            db.query(AuditLog).filter(
+                AuditLog.entity == "sale",
+                AuditLog.entity_id == si.sale_id,
+            ).delete(synchronize_session=False)
+
+        # Удаляем возвраты по этому товару
+        db.query(Return).filter(Return.product_id == product_id).delete(
+            synchronize_session=False
+        )
+
+        # Удаляем позиции продаж
+        db.query(SaleItem).filter(SaleItem.product_id == product_id).delete(
+            synchronize_session=False
+        )
+
+        # Удаляем приёмки
+        db.query(Receipt).filter(Receipt.product_id == product_id).delete(
+            synchronize_session=False
+        )
+
+        db.delete(p)
+        db.commit()
+        return {"deleted": True, "hard": True}
+    else:
+        # Владелец: удаление только если нет истории продаж
+        has_sales = db.query(SaleItem).filter(SaleItem.product_id == product_id).first()
+        if has_sales:
+            raise HTTPException(
+                status_code=400,
+                detail="Нельзя удалить товар с историей продаж. Обратитесь к разработчику."
+            )
+        db.query(Receipt).filter(Receipt.product_id == product_id).delete(
+            synchronize_session=False
+        )
+        db.delete(p)
+        db.commit()
+        return {"deleted": True, "hard": False}
 
 
-# ─── Фото ─────────────────────────────────────────────────────────────────────
-
+# ─── POST /products/{id}/photo ─────────────────────────────────────────────
 @router.post("/{product_id}/photo")
-async def upload_product_photo(
+def upload_photo(
     product_id: int,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     telegram_id: int = Depends(get_current_user),
 ):
-    require_stock_access(telegram_id, db)
+    user = get_current_user_obj(telegram_id, db)
+    if user.role not in (UserRole.developer, UserRole.owner_business, UserRole.storekeeper):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
-    if file.content_type not in ALLOWED_TYPES:
-        raise HTTPException(status_code=400, detail="Только JPEG, PNG или WebP")
-    contents = await file.read()
-    if len(contents) > MAX_SIZE_MB * 1024 * 1024:
-        raise HTTPException(status_code=400, detail=f"Файл больше {MAX_SIZE_MB} МБ")
-    file_id = await upload_photo_to_telegram(contents, file.filename or "photo.jpg")
-    p.photo_url = f"tg:{file_id}"
+
+    ext = os.path.splitext(file.filename or "")[1] or ".jpg"
+    filename = f"{uuid.uuid4().hex}{ext}"
+    path = os.path.join(UPLOAD_DIR, filename)
+    with open(path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    # Удаляем старое фото
+    if p.photo_url:
+        old_path = p.photo_url.replace("/static/", "uploads/", 1)
+        if os.path.exists(old_path):
+            os.remove(old_path)
+
+    p.photo_url = f"/static/products/{filename}"
     db.commit()
-    return {"photo_url": f"/media/photo/{file_id}"}
+    return {"photo_url": p.photo_url}
 
 
-@router.delete("/{product_id}/photo", status_code=204)
-def delete_product_photo(
+# ─── DELETE /products/{id}/photo ───────────────────────────────────────────
+@router.delete("/{product_id}/photo")
+def delete_photo(
     product_id: int,
     db: Session = Depends(get_db),
     telegram_id: int = Depends(get_current_user),
 ):
-    require_stock_access(telegram_id, db)
+    user = get_current_user_obj(telegram_id, db)
+    if user.role not in (UserRole.developer, UserRole.owner_business, UserRole.storekeeper):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+
     p = db.query(Product).filter(Product.id == product_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
-    p.photo_url = None
-    db.commit()
+
+    if p.photo_url:
+        old_path = p.photo_url.replace("/static/", "uploads/", 1)
+        if os.path.exists(old_path):
+            os.remove(old_path)
+        p.photo_url = None
+        db.commit()
+
+    return {"deleted": True}
