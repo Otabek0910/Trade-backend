@@ -9,6 +9,7 @@ import os, uuid, shutil
 from app.db.session import get_db
 from app.models.product import Product
 from app.models.sale_item import SaleItem
+from app.models.sale import Sale
 from app.models.receipt import Receipt
 from app.models.return_model import Return
 from app.models.audit import AuditLog
@@ -205,6 +206,18 @@ def delete_product(
         db.query(SaleItem).filter(SaleItem.product_id == product_id).delete(
             synchronize_session=False
         )
+
+        # Удаляем продажи у которых больше нет ни одной позиции
+        orphan_sale_ids = [sid for (sid,) in db.query(Sale.id).all()
+                          if not db.query(SaleItem).filter(SaleItem.sale_id == sid).first()]
+        if orphan_sale_ids:
+            db.query(AuditLog).filter(
+                AuditLog.entity == "sale",
+                AuditLog.entity_id.in_(orphan_sale_ids),
+            ).delete(synchronize_session=False)
+            db.query(Sale).filter(Sale.id.in_(orphan_sale_ids)).delete(
+                synchronize_session=False
+            )
 
         # Удаляем приёмки
         db.query(Receipt).filter(Receipt.product_id == product_id).delete(
