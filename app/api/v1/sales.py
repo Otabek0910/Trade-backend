@@ -13,6 +13,7 @@ from app.models.user import User
 from app.models.audit import AuditLog
 from app.models.return_model import Return
 from app.core.telegram_auth import get_current_user
+from app.core.notify import notify_sale
 
 router = APIRouter(prefix="/sales", tags=["Продажи"])
 
@@ -130,6 +131,22 @@ def create_sale(
 
     db.commit()
     db.refresh(sale)
+
+    # Уведомление подписчикам
+    import asyncio
+    customer_name = "Розница"
+    if data.customer_id:
+        cust = db.query(Customer).filter(Customer.id == data.customer_id).first()
+        if cust:
+            customer_name = cust.name
+    try:
+        asyncio.create_task(notify_sale(
+            db=db, seller_name=user.full_name,
+            customer_name=customer_name,
+            total=float(total), items_count=len(data.items), sale_id=sale.id,
+        ))
+    except RuntimeError:
+        pass  # не в async контексте
 
     return {
         "id": sale.id,

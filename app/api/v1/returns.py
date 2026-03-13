@@ -19,6 +19,7 @@ from app.models.customer import Customer
 from app.models.user import User
 from app.models.audit import AuditLog
 from app.core.telegram_auth import get_current_user
+from app.core.notify import notify_return
 
 router = APIRouter(prefix="/returns", tags=["Возвраты"])
 
@@ -308,6 +309,18 @@ def create_return(
 
     db.commit()
     db.refresh(ret)
+
+    import asyncio
+    try:
+        cust_name = customer.name if customer else "Розница"
+        asyncio.create_task(notify_return(
+            db=db, creator_name=user.full_name,
+            product_name=product.name if product else "—",
+            customer_name=cust_name,
+            quantity=body.quantity, amount=float(return_amount),
+        ))
+    except RuntimeError:
+        pass
 
     return ReturnOut(
         id=ret.id, sale_id=ret.sale_id, product_id=ret.product_id,

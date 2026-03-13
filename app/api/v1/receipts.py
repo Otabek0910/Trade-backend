@@ -11,6 +11,7 @@ from app.models.supplier import Supplier
 from app.models.user import User
 from app.models.audit import AuditLog
 from app.core.telegram_auth import get_current_user
+from app.core.notify import notify_receipt
 
 router = APIRouter(prefix="/receipts", tags=["Приёмка товара"])
 
@@ -96,6 +97,16 @@ def create_receipt(
 
     db.commit()
     db.refresh(receipt)
+
+    import asyncio
+    try:
+        asyncio.create_task(notify_receipt(
+            db=db, storekeeper_name=user.full_name,
+            product_name=product.name, supplier_name=supplier.name,
+            quantity=data.quantity, price=float(data.purchase_price),
+        ))
+    except RuntimeError:
+        pass
 
     debt_msg = f" · Долг поставщику: {debt:,.0f} сум" if debt > 0 else ""
     return {

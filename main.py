@@ -14,6 +14,11 @@ from app.models import (
     Expense, AuditLog, SupplierPayment
 )
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+scheduler = AsyncIOScheduler()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 Создаём таблицы...")
@@ -58,6 +63,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(12,2) NOT NULL DEFAULT 0",
             "ALTER TABLE receipts ADD COLUMN IF NOT EXISTS debt NUMERIC(12,2) NOT NULL DEFAULT 0",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS needs_reauth BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS notify BOOLEAN NOT NULL DEFAULT FALSE",
             """CREATE TABLE IF NOT EXISTS supplier_payments (
                 id SERIAL PRIMARY KEY,
                 supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
@@ -82,12 +88,27 @@ async def lifespan(app: FastAPI):
         print(f"❌ Ошибка при старте БД: {e}")
         print("⚠️ Приложение запускается без миграций")
 
+    # Утренняя сводка — каждый день в 09:00
+    from app.core.notify import send_daily_summary
+    from app.db.session import SessionLocal
+
+    async def daily_job():
+        db = SessionLocal()
+        try:
+            await send_daily_summary(db)
+        finally:
+            db.close()
+
+    scheduler.add_job(daily_job, CronTrigger(hour=9, minute=0, timezone="Asia/Tashkent"))
+    scheduler.start()
+
     # Папки для загрузок
     os.makedirs("uploads/products", exist_ok=True)
     os.makedirs("uploads/customers", exist_ok=True)
     os.makedirs("uploads/suppliers", exist_ok=True)
 
     yield
+    scheduler.shutdown()
 
 app = FastAPI(lifespan=lifespan)
 

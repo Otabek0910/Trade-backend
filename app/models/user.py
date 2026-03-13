@@ -2,18 +2,18 @@ from sqlalchemy import Column, Integer, String, BigInteger, DateTime, Enum, Bool
 from sqlalchemy.sql import func
 from app.db.base import Base
 import enum
-
+ 
 class UserRole(str, enum.Enum):
     developer = "developer"
     owner_business = "owner_business"
     seller = "seller"
     storekeeper = "storekeeper"
-
+ 
 class UserStatus(str, enum.Enum):
     pending = "pending"    # ожидает одобрения владельца
     active = "active"      # активен
     blocked = "blocked"    # заблокирован
-
+ 
 class User(Base):
     __tablename__ = "users"
     
@@ -25,3 +25,4 @@ class User(Base):
     status = Column(Enum(UserStatus), nullable=False, default=UserStatus.pending)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     needs_reauth = Column(Boolean, default=False, nullable=False, server_default="false")
+    notify = Column(Boolean, default=False, nullable=False, server_default="false")

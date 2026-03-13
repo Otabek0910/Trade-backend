@@ -145,3 +145,21 @@ def update_user(
     db.commit()
     db.refresh(target)
     return user_to_dict(target)
+
+@router.patch("/{user_id}/notify")
+def toggle_notify(
+    user_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """Включить/выключить уведомления для сотрудника (только developer/owner)"""
+    current = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not current or current.role not in (UserRole.developer, UserRole.owner_business):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    target.notify = not getattr(target, 'notify', False)
+    db.commit()
+    db.refresh(target)
+    return {"id": target.id, "notify": target.notify}
