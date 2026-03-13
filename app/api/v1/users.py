@@ -26,6 +26,7 @@ def user_to_dict(u: User) -> dict:
         "role": u.role.value,
         "status": u.status.value,
         "created_at": u.created_at.isoformat() if u.created_at else None,
+        "notify": getattr(u, 'notify', False) or False,
     }
 
 
