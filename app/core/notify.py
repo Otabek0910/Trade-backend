@@ -1,156 +1,166 @@
-"""
-app/core/notify.py — отправка Telegram уведомлений подписанным пользователям
-"""
-import httpx
-from datetime import date
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from app.core.config import settings
+from pydantic import BaseModel
+from typing import Optional
 
-BOT_URL = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}"
+from app.db.session import get_db
+from app.models.user import User, UserRole, UserStatus
+from app.models.sale import Sale
+from app.core.telegram_auth import get_current_user
 
-ROLE_EVENTS = {
-    "sale":    ["developer", "owner_business", "seller"],
-    "receipt": ["developer", "owner_business", "storekeeper"],
-    "return":  ["developer", "owner_business", "seller"],
-    "daily":   ["developer", "owner_business", "seller", "storekeeper"],
-}
-
-
-def _send(chat_id: int, text: str):
-    """Синхронная отправка — работает из обычных FastAPI роутов"""
-    try:
-        with httpx.Client(timeout=5) as client:
-            client.post(f"{BOT_URL}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": text,
-                "parse_mode": "HTML",
-            })
-    except Exception:
-        pass
+router = APIRouter(prefix="/users", tags=["Пользователи"])
 
 
-def _get_subscribers(db: Session, event_type: str) -> list:
-    from app.models.user import User, UserStatus
-    allowed_roles = ROLE_EVENTS.get(event_type, [])
-    return db.query(User).filter(
-        User.notify == True,
-        User.status == UserStatus.active,
-        User.role.in_(allowed_roles),
-    ).all()
+class UserUpdate(BaseModel):
+    role: Optional[UserRole] = None
+    status: Optional[UserStatus] = None
+    full_name: Optional[str] = None
 
 
-def notify_sale(db: Session, seller_name: str, customer_name: str,
-                total: float, items_count: int, sale_id: int):
-    subs = _get_subscribers(db, "sale")
-    if not subs:
-        return
-    text = (
-        f"💰 <b>Новая продажа #{sale_id}</b>\n"
-        f"👤 Продавец: {seller_name}\n"
-        f"🛍 Клиент: {customer_name}\n"
-        f"📦 Позиций: {items_count}\n"
-        f"💵 Сумма: <b>{total:,.0f} сум</b>"
-    )
-    for u in subs:
-        _send(u.telegram_id, text)
+def user_to_dict(u: User) -> dict:
+    return {
+        "id": u.id,
+        "telegram_id": u.telegram_id,
+        "username": u.username,
+        "full_name": u.full_name,
+        "role": u.role.value,
+        "status": u.status.value,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "notify": getattr(u, 'notify', False) or False,
+    }
 
 
-def notify_receipt(db: Session, storekeeper_name: str, product_name: str,
-                   supplier_name: str, quantity: int, price: float):
-    subs = _get_subscribers(db, "receipt")
-    if not subs:
-        return
-    text = (
-        f"📥 <b>Приёмка товара</b>\n"
-        f"👤 Кладовщик: {storekeeper_name}\n"
-        f"📦 Товар: {product_name}\n"
-        f"🚚 Поставщик: {supplier_name}\n"
-        f"🔢 Количество: {quantity} шт\n"
-        f"💵 Цена: {price:,.0f} сум/шт"
-    )
-    for u in subs:
-        _send(u.telegram_id, text)
+def require_owner(telegram_id: int, db: Session):
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user or user.role not in (UserRole.owner_business, UserRole.developer):
+        raise HTTPException(status_code=403, detail="Доступ только для владельца")
+    return user
 
 
-def notify_return(db: Session, creator_name: str, product_name: str,
-                  customer_name: str, quantity: int, amount: float):
-    subs = _get_subscribers(db, "return")
-    if not subs:
-        return
-    text = (
-        f"↩️ <b>Возврат товара</b>\n"
-        f"👤 Оформил: {creator_name}\n"
-        f"📦 Товар: {product_name}\n"
-        f"🛍 Клиент: {customer_name}\n"
-        f"🔢 Количество: {quantity} шт\n"
-        f"💵 Сумма возврата: {amount:,.0f} сум"
-    )
-    for u in subs:
-        _send(u.telegram_id, text)
+@router.get("")
+def get_users(
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    require_owner(telegram_id, db)
+    users = db.query(User).order_by(User.created_at.desc()).all()
+    return [user_to_dict(u) for u in users]
 
 
-async def send_daily_summary(db: Session):
-    """Утренняя сводка — вызывается из APScheduler (async контекст)"""
-    from app.models.user import User, UserStatus, UserRole
-    from app.models.sale import Sale, SaleStatus
-    from app.models.product import Product
-    from app.models.customer import Customer
-    from app.models.supplier import Supplier
-    from sqlalchemy import func, cast, Date
+@router.post("/{user_id}/approve")
+def approve_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """Одобрить заявку пользователя → status: active"""
+    require_owner(telegram_id, db)
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if target.status != UserStatus.pending:
+        raise HTTPException(status_code=400, detail="Пользователь не в статусе pending")
+    target.status = UserStatus.active
+    target.needs_reauth = True
+    db.commit()
+    db.refresh(target)
+    return user_to_dict(target)
 
-    today = date.today()
-    yesterday = date.fromordinal(today.toordinal() - 1)
 
-    subs = db.query(User).filter(
-        User.notify == True,
-        User.status == UserStatus.active,
-    ).all()
+@router.post("/{user_id}/reject")
+def reject_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """Отклонить заявку → удалить пользователя из БД"""
+    require_owner(telegram_id, db)
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if target.status != UserStatus.pending:
+        raise HTTPException(status_code=400, detail="Пользователь не в статусе pending")
+    db.delete(target)
+    db.commit()
+    return {"deleted": True}
 
-    for u in subs:
-        if u.role in (UserRole.developer, UserRole.owner_business):
-            sales = db.query(Sale).filter(
-                cast(Sale.created_at, Date) == yesterday,
-                Sale.status == SaleStatus.completed,
-            ).all()
-            revenue = sum(float(s.total_amount) for s in sales)
-            paid = sum(float(s.paid_amount) for s in sales)
-            low = db.query(Product).filter(Product.current_stock <= Product.min_stock).count()
-            cust_debt = float(db.query(func.sum(Customer.total_debt)).scalar() or 0)
-            sup_debt = float(db.query(func.sum(Supplier.total_debt)).scalar() or 0)
-            text = (
-                f"☀️ <b>Доброе утро! Сводка за вчера</b>\n\n"
-                f"💰 Выручка: <b>{revenue:,.0f} сум</b>\n"
-                f"✅ Оплачено: {paid:,.0f} сум\n"
-                f"⏳ Долг клиентов: {cust_debt:,.0f} сум\n"
-                f"🚚 Долг поставщикам: {sup_debt:,.0f} сум\n"
-                f"📦 Продаж: {len(sales)}\n"
-                f"⚠️ Мало остатка: {low} товаров"
-            )
-        elif u.role == UserRole.seller:
-            my_sales = db.query(Sale).filter(
-                cast(Sale.created_at, Date) == yesterday,
-                Sale.seller_id == u.id,
-                Sale.status == SaleStatus.completed,
-            ).all()
-            revenue = sum(float(s.total_amount) for s in my_sales)
-            text = (
-                f"☀️ <b>Доброе утро, {u.full_name}!</b>\n\n"
-                f"📊 Ваши продажи за вчера:\n"
-                f"🔢 Количество: {len(my_sales)}\n"
-                f"💰 Сумма: <b>{revenue:,.0f} сум</b>"
-            )
-        elif u.role == UserRole.storekeeper:
-            low = db.query(Product).filter(Product.current_stock <= Product.min_stock).count()
-            low_items = db.query(Product).filter(
-                Product.current_stock <= Product.min_stock
-            ).limit(5).all()
-            items_text = "\n".join(f"  • {p.name}: {p.current_stock}/{p.min_stock}" for p in low_items)
-            text = (
-                f"☀️ <b>Доброе утро, {u.full_name}!</b>\n\n"
-                f"📦 Товаров с низким остатком: {low}\n"
-                + (items_text if items_text else "Всё в норме ✅")
-            )
-        else:
-            continue
 
-        _send(u.telegram_id, text)
+@router.delete("/{user_id}")
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """
+    Удалить сотрудника.
+    - Если есть продажи в истории → 400 (нельзя, данные нужны для отчётов)
+    - Если продаж не было → удалить безвозвратно
+    """
+    current = require_owner(telegram_id, db)
+
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if target.telegram_id == telegram_id:
+        raise HTTPException(status_code=400, detail="Нельзя удалить себя")
+    if target.role == UserRole.developer and current.role != UserRole.developer:
+        raise HTTPException(status_code=403, detail="Нельзя удалить разработчика")
+    if target.role == UserRole.owner_business and current.role != UserRole.developer:
+        raise HTTPException(status_code=403, detail="Нельзя удалить другого владельца бизнеса")
+
+    has_sales = db.query(Sale).filter(Sale.seller_id == target.id).first() is not None
+    if has_sales:
+        raise HTTPException(
+            status_code=400,
+            detail="У сотрудника есть история продаж. Заблокируйте вместо удаления."
+        )
+
+    db.delete(target)
+    db.commit()
+    return {"deleted": True}
+
+
+@router.patch("/{user_id}")
+def update_user(
+    user_id: int,
+    data: UserUpdate,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    current = require_owner(telegram_id, db)
+
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    if target.telegram_id == telegram_id:
+        raise HTTPException(status_code=400, detail="Нельзя изменить свою учётную запись")
+    if target.role == UserRole.developer and current.role != UserRole.developer:
+        raise HTTPException(status_code=403, detail="Нельзя изменить разработчика")
+    if target.role == UserRole.owner_business and current.role != UserRole.developer:
+        raise HTTPException(status_code=403, detail="Нельзя изменить другого владельца бизнеса")
+
+    for field, value in data.model_dump(exclude_none=True).items():
+        setattr(target, field, value)
+    target.needs_reauth = True
+    db.commit()
+    db.refresh(target)
+    return user_to_dict(target)
+
+@router.patch("/{user_id}/notify")
+def toggle_notify(
+    user_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """Включить/выключить уведомления для сотрудника (только developer/owner)"""
+    current = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not current or current.role not in (UserRole.developer, UserRole.owner_business):
+        raise HTTPException(status_code=403, detail="Нет доступа")
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    target.notify = not getattr(target, 'notify', False)
+    db.commit()
+    db.refresh(target)
+    return {"id": target.id, "notify": target.notify}
