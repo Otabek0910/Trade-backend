@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
@@ -38,6 +38,7 @@ class SaleCreate(BaseModel):
 @router.post("")
 def create_sale(
     data: SaleCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     telegram_id: int = Depends(get_current_user),
 ):
@@ -133,20 +134,16 @@ def create_sale(
     db.refresh(sale)
 
     # Уведомление подписчикам
-    import asyncio
-    customer_name = "Розница"
+    _customer_name = "Розница"
     if data.customer_id:
-        cust = db.query(Customer).filter(Customer.id == data.customer_id).first()
-        if cust:
-            customer_name = cust.name
-    try:
-        asyncio.create_task(notify_sale(
-            db=db, seller_name=user.full_name,
-            customer_name=customer_name,
-            total=float(total), items_count=len(data.items), sale_id=sale.id,
-        ))
-    except RuntimeError:
-        pass  # не в async контексте
+        _cust = db.query(Customer).filter(Customer.id == data.customer_id).first()
+        if _cust:
+            _customer_name = _cust.name
+    background_tasks.add_task(
+        notify_sale, db=db, seller_name=user.full_name,
+        customer_name=_customer_name,
+        total=float(total), items_count=len(data.items), sale_id=sale.id,
+    )  # не в async контексте
 
     return {
         "id": sale.id,

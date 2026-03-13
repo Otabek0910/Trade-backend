@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from decimal import Decimal
@@ -27,6 +27,7 @@ class ReceiptCreate(BaseModel):
 @router.post("")
 def create_receipt(
     data: ReceiptCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     telegram_id: int = Depends(get_current_user),
 ):
@@ -98,15 +99,11 @@ def create_receipt(
     db.commit()
     db.refresh(receipt)
 
-    import asyncio
-    try:
-        asyncio.create_task(notify_receipt(
-            db=db, storekeeper_name=user.full_name,
-            product_name=product.name, supplier_name=supplier.name,
-            quantity=data.quantity, price=float(data.purchase_price),
-        ))
-    except RuntimeError:
-        pass
+    background_tasks.add_task(
+        notify_receipt, db=db, storekeeper_name=user.full_name,
+        product_name=product.name, supplier_name=supplier.name,
+        quantity=data.quantity, price=float(data.purchase_price),
+    )
 
     debt_msg = f" · Долг поставщику: {debt:,.0f} сум" if debt > 0 else ""
     return {

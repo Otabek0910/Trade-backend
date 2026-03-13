@@ -9,29 +9,27 @@ from app.core.config import settings
 BOT_URL = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}"
 
 ROLE_EVENTS = {
-    # event_type: роли которые получают это событие
-    "sale":     ["developer", "owner_business", "seller"],
-    "receipt":  ["developer", "owner_business", "storekeeper"],
-    "return":   ["developer", "owner_business", "seller"],
-    "product":  ["developer", "owner_business", "storekeeper"],
-    "daily":    ["developer", "owner_business", "seller", "storekeeper"],
+    "sale":    ["developer", "owner_business", "seller"],
+    "receipt": ["developer", "owner_business", "storekeeper"],
+    "return":  ["developer", "owner_business", "seller"],
+    "daily":   ["developer", "owner_business", "seller", "storekeeper"],
 }
 
 
-async def _send(chat_id: int, text: str):
+def _send(chat_id: int, text: str):
+    """Синхронная отправка — работает из обычных FastAPI роутов"""
     try:
-        async with httpx.AsyncClient(timeout=5) as client:
-            await client.post(f"{BOT_URL}/sendMessage", json={
+        with httpx.Client(timeout=5) as client:
+            client.post(f"{BOT_URL}/sendMessage", json={
                 "chat_id": chat_id,
                 "text": text,
                 "parse_mode": "HTML",
             })
     except Exception:
-        pass  # уведомление не критично
+        pass
 
 
 def _get_subscribers(db: Session, event_type: str) -> list:
-    """Получить подписанных пользователей для данного типа события"""
     from app.models.user import User, UserStatus
     allowed_roles = ROLE_EVENTS.get(event_type, [])
     return db.query(User).filter(
@@ -41,8 +39,8 @@ def _get_subscribers(db: Session, event_type: str) -> list:
     ).all()
 
 
-async def notify_sale(db: Session, seller_name: str, customer_name: str,
-                       total: float, items_count: int, sale_id: int):
+def notify_sale(db: Session, seller_name: str, customer_name: str,
+                total: float, items_count: int, sale_id: int):
     subs = _get_subscribers(db, "sale")
     if not subs:
         return
@@ -54,11 +52,11 @@ async def notify_sale(db: Session, seller_name: str, customer_name: str,
         f"💵 Сумма: <b>{total:,.0f} сум</b>"
     )
     for u in subs:
-        await _send(u.telegram_id, text)
+        _send(u.telegram_id, text)
 
 
-async def notify_receipt(db: Session, storekeeper_name: str, product_name: str,
-                          supplier_name: str, quantity: int, price: float):
+def notify_receipt(db: Session, storekeeper_name: str, product_name: str,
+                   supplier_name: str, quantity: int, price: float):
     subs = _get_subscribers(db, "receipt")
     if not subs:
         return
@@ -71,11 +69,11 @@ async def notify_receipt(db: Session, storekeeper_name: str, product_name: str,
         f"💵 Цена: {price:,.0f} сум/шт"
     )
     for u in subs:
-        await _send(u.telegram_id, text)
+        _send(u.telegram_id, text)
 
 
-async def notify_return(db: Session, creator_name: str, product_name: str,
-                         customer_name: str, quantity: int, amount: float):
+def notify_return(db: Session, creator_name: str, product_name: str,
+                  customer_name: str, quantity: int, amount: float):
     subs = _get_subscribers(db, "return")
     if not subs:
         return
@@ -88,11 +86,11 @@ async def notify_return(db: Session, creator_name: str, product_name: str,
         f"💵 Сумма возврата: {amount:,.0f} сум"
     )
     for u in subs:
-        await _send(u.telegram_id, text)
+        _send(u.telegram_id, text)
 
 
 async def send_daily_summary(db: Session):
-    """Утренняя сводка — каждому по его роли"""
+    """Утренняя сводка — вызывается из APScheduler (async контекст)"""
     from app.models.user import User, UserStatus, UserRole
     from app.models.sale import Sale, SaleStatus
     from app.models.product import Product
@@ -110,7 +108,6 @@ async def send_daily_summary(db: Session):
 
     for u in subs:
         if u.role in (UserRole.developer, UserRole.owner_business):
-            # Полная статистика за вчера
             sales = db.query(Sale).filter(
                 cast(Sale.created_at, Date) == yesterday,
                 Sale.status == SaleStatus.completed,
@@ -126,12 +123,10 @@ async def send_daily_summary(db: Session):
                 f"✅ Оплачено: {paid:,.0f} сум\n"
                 f"⏳ Долг клиентов: {cust_debt:,.0f} сум\n"
                 f"🚚 Долг поставщикам: {sup_debt:,.0f} сум\n"
-                f"📦 Продаж: {len(sales)} шт\n"
+                f"📦 Продаж: {len(sales)}\n"
                 f"⚠️ Мало остатка: {low} товаров"
             )
-
         elif u.role == UserRole.seller:
-            # Только свои продажи за вчера
             my_sales = db.query(Sale).filter(
                 cast(Sale.created_at, Date) == yesterday,
                 Sale.seller_id == u.id,
@@ -144,7 +139,6 @@ async def send_daily_summary(db: Session):
                 f"🔢 Количество: {len(my_sales)}\n"
                 f"💰 Сумма: <b>{revenue:,.0f} сум</b>"
             )
-
         elif u.role == UserRole.storekeeper:
             low = db.query(Product).filter(Product.current_stock <= Product.min_stock).count()
             low_items = db.query(Product).filter(
@@ -159,4 +153,4 @@ async def send_daily_summary(db: Session):
         else:
             continue
 
-        await _send(u.telegram_id, text)
+        _send(u.telegram_id, text)

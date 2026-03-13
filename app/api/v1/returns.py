@@ -2,7 +2,7 @@
 app/api/v1/returns.py
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
@@ -200,6 +200,7 @@ def get_sale_for_return(
 @router.post("", response_model=ReturnOut, status_code=201)
 def create_return(
     body: ReturnCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     telegram_id: int = Depends(get_current_user),
 ):
@@ -310,17 +311,12 @@ def create_return(
     db.commit()
     db.refresh(ret)
 
-    import asyncio
-    try:
-        cust_name = customer.name if customer else "Розница"
-        asyncio.create_task(notify_return(
-            db=db, creator_name=user.full_name,
-            product_name=product.name if product else "—",
-            customer_name=cust_name,
-            quantity=body.quantity, amount=float(return_amount),
-        ))
-    except RuntimeError:
-        pass
+    background_tasks.add_task(
+        notify_return, db=db, creator_name=user.full_name,
+        product_name=product.name if product else "—",
+        customer_name=customer.name if customer else "Розница",
+        quantity=body.quantity, amount=float(return_amount),
+    )
 
     return ReturnOut(
         id=ret.id, sale_id=ret.sale_id, product_id=ret.product_id,
