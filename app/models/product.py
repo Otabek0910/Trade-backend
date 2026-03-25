@@ -23,4 +23,8 @@ class Product(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     
+    # ── Валюта закупки ──────────────────────────────────────────────────────
+    purchase_currency = Column(String(3), nullable=True, default='uzs')  # 'uzs' | 'usd'
+    purchase_rate     = Column(Numeric(12, 2), nullable=True)            # курс на момент закупки
+
     supplier = relationship("Supplier", back_populates="products")

@@ -12,6 +12,7 @@ from app.models.expense import Expense
 from app.models.return_model import Return
 from app.models.user import User
 from app.models.supplier import Supplier
+from typing import Optional
 from app.core.telegram_auth import get_current_user
 
 router = APIRouter(prefix="/dashboard", tags=["Дашборд"])
@@ -115,6 +116,8 @@ def get_dashboard(
         db.query(
             Product.id,
             Product.name,
+            Product.brand,
+            Product.category,
             Product.unit,
             Product.unit_value,
             func.sum(SaleItem.quantity).label("total_qty"),
@@ -123,7 +126,7 @@ def get_dashboard(
         .join(SaleItem, SaleItem.product_id == Product.id)
         .join(Sale, and_(Sale.id == SaleItem.sale_id, Sale.status == SaleStatus.completed))
         .filter(cast(Sale.created_at, Date) >= month_start)
-        .group_by(Product.id, Product.name, Product.unit, Product.unit_value)
+        .group_by(Product.id, Product.name, Product.brand, Product.category, Product.unit, Product.unit_value)
         .order_by(func.sum(SaleItem.quantity).desc())
         .limit(10)
         .all()
@@ -150,6 +153,8 @@ def get_dashboard(
         if net_qty > 0:
             top_products_adj.append({
                 "name": p.name,
+                "brand": p.brand,
+                "category": p.category,
                 "total_qty": net_qty,
                 "total_revenue": round(net_rev, 0),
                 "unit": p.unit or "шт",
@@ -300,7 +305,7 @@ def get_dashboard(
 
     # ── Последние возвраты — ДОБАВЛЕНЫ unit, unit_value ──
     recent_returns = (
-        db.query(Return, Product.name, Product.unit, Product.unit_value, Customer.name)
+        db.query(Return, Product.name, Product.brand, Product.category, Product.unit, Product.unit_value, Customer.name)
         .join(Product, Return.product_id == Product.id)
         .join(Sale, Return.sale_id == Sale.id)
         .join(Customer, Sale.customer_id == Customer.id)
@@ -350,6 +355,8 @@ def get_dashboard(
         "low_stock_items": [
             {
                 "name": p.name,
+                "brand": p.brand,
+                "category": p.category,
                 "current_stock": p.current_stock,
                 "min_stock": p.min_stock,
                 "unit": p.unit or "шт",
@@ -365,6 +372,8 @@ def get_dashboard(
             {
                 "id": ret.id,
                 "product_name": prod_name,
+                "product_brand": prod_brand,
+                "product_category": prod_category,
                 "customer_name": cust_name,
                 "quantity": ret.quantity,
                 "return_amount": float(ret.return_amount),
@@ -373,10 +382,109 @@ def get_dashboard(
                 "unit": prod_unit or "шт",
                 "unit_value": prod_unit_value,
             }
-            for ret, prod_name, prod_unit, prod_unit_value, cust_name in recent_returns
+            for ret, prod_name, prod_brand, prod_category, prod_unit, prod_unit_value, cust_name in recent_returns
         ],
     }
 
+
+
+
+@router.get("/history")
+def get_dashboard_history(
+    year: int,
+    month: Optional[int] = None,   # если None — весь год
+    alltime: bool = False,          # если True — вся история
+    db: Session = Depends(get_db),
+    _: int = Depends(get_current_user),
+):
+    """
+    Исторические данные за конкретный месяц, год или всё время.
+    GET /dashboard/history?year=2025&month=3
+    GET /dashboard/history?year=2025           ← весь год
+    GET /dashboard/history?year=2025&alltime=true ← всё время
+    """
+    from datetime import date as date_type
+
+    if alltime:
+        date_from = date_type(2000, 1, 1)
+        date_to   = date_type.today()
+    elif month:
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        date_from = date_type(year, month, 1)
+        date_to   = date_type(year, month, last_day)
+    else:
+        date_from = date_type(year, 1, 1)
+        date_to   = date_type(year, 12, 31)
+
+    stats = get_period_stats(db, date_from, date_to)
+
+    # Топ товаров за период
+    top_raw = (
+        db.query(
+            Product.id,
+            Product.name,
+            Product.brand,
+            Product.category,
+            Product.unit,
+            Product.unit_value,
+            func.sum(SaleItem.quantity).label("total_qty"),
+            func.sum(SaleItem.selling_price * SaleItem.quantity).label("total_revenue"),
+        )
+        .join(SaleItem, SaleItem.product_id == Product.id)
+        .join(Sale, and_(Sale.id == SaleItem.sale_id, Sale.status == SaleStatus.completed))
+        .filter(
+            cast(Sale.created_at, Date) >= date_from,
+            cast(Sale.created_at, Date) <= date_to,
+        )
+        .group_by(Product.id, Product.name, Product.brand, Product.category, Product.unit, Product.unit_value)
+        .order_by(func.sum(SaleItem.quantity).desc())
+        .limit(10)
+        .all()
+    )
+
+    # Возвраты по товарам за период
+    prod_returns: dict[int, dict] = {}
+    for pid, qty, amt in (
+        db.query(Return.product_id, func.sum(Return.quantity), func.sum(Return.return_amount))
+        .join(Sale, Return.sale_id == Sale.id)
+        .filter(
+            cast(Return.created_at, Date) >= date_from,
+            cast(Return.created_at, Date) <= date_to,
+            Sale.status == SaleStatus.completed,
+        )
+        .group_by(Return.product_id)
+        .all()
+    ):
+        prod_returns[pid] = {"qty": int(qty or 0), "amount": float(amt or 0)}
+
+    top_products = []
+    for p in top_raw:
+        ret = prod_returns.get(p.id, {"qty": 0, "amount": 0.0})
+        net_qty = int(p.total_qty) - ret["qty"]
+        net_rev = float(p.total_revenue) - ret["amount"]
+        if net_qty > 0:
+            top_products.append({
+                "name": p.name,
+                "brand": p.brand,
+                "category": p.category,
+                "total_qty": net_qty,
+                "total_revenue": round(net_rev, 0),
+                "unit": p.unit or "шт",
+                "unit_value": p.unit_value,
+            })
+
+    return {
+        **stats,
+        "period": {
+            "type": "alltime" if alltime else ("month" if month else "year"),
+            "year": year,
+            "month": month,
+            "date_from": str(date_from),
+            "date_to": str(date_to),
+        },
+        "top_products": sorted(top_products, key=lambda x: -x["total_qty"])[:5],
+    }
 
 @router.get("/quick-stats")
 def quick_stats(

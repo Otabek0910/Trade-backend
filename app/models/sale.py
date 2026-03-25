@@ -26,6 +26,10 @@ class Sale(Base):
     paid_amount = Column(Numeric(12, 2), nullable=False)  # если меньше total → долг
     status = Column(Enum(SaleStatus), default=SaleStatus.completed)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # ── Курсы валют на момент продажи ───────────────────────────────────────
+    cbu_rate       = Column(Numeric(12, 2), nullable=True)   # официальный курс ЦБУ
+    market_rate    = Column(Numeric(12, 2), nullable=True)   # рыночный курс (если указан)
+    effective_rate = Column(Numeric(12, 2), nullable=True)   # фактический = market_rate ?? cbu_rate
     
     seller = relationship("User")
     customer = relationship("Customer")

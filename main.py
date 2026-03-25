@@ -13,6 +13,7 @@ from app.models import (
     Receipt, Sale, SaleItem, Return,
     Expense, AuditLog, SupplierPayment
 )
+from app.models.exchange_rate import ExchangeRate  # ← новая модель
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -72,6 +73,27 @@ async def lifespan(app: FastAPI):
                 created_by INTEGER NOT NULL REFERENCES users(id),
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )""",
+
+            # ── НОВЫЕ: таблица курсов ЦБУ ───────────────────────────────────
+            """CREATE TABLE IF NOT EXISTS exchange_rates (
+                id         SERIAL PRIMARY KEY,
+                date       DATE NOT NULL UNIQUE,
+                cbu_rate   NUMERIC(12,2) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            )""",
+
+            # ── НОВЫЕ: валюта закупки в товарах ────────────────────────────
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_currency VARCHAR(3) DEFAULT 'uzs'",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_rate NUMERIC(12,2)",
+
+            # ── НОВЫЕ: курсы в продажах ─────────────────────────────────────
+            "ALTER TABLE sales ADD COLUMN IF NOT EXISTS cbu_rate NUMERIC(12,2)",
+            "ALTER TABLE sales ADD COLUMN IF NOT EXISTS market_rate NUMERIC(12,2)",
+            "ALTER TABLE sales ADD COLUMN IF NOT EXISTS effective_rate NUMERIC(12,2)",
+
+            # ── НОВЫЕ: валюта закупки в позициях продажи ────────────────────
+            "ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS purchase_currency VARCHAR(3) DEFAULT 'uzs'",
+            "ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS purchase_rate_at_sale NUMERIC(12,2)",
         ]
 
         with engine.connect() as conn:
@@ -144,6 +166,7 @@ from app.api.v1.expenses import router as expenses_router
 from app.api.v1.returns import router as returns_router
 from app.api.v1.audit import router as audit_router
 from app.api.v1.media import router as media_router
+from app.api.v1.rates import router as rates_router          # ← новый
 
 app.include_router(auth_router)
 app.include_router(protected_router)
@@ -160,6 +183,7 @@ app.include_router(expenses_router)
 app.include_router(returns_router)
 app.include_router(audit_router)
 app.include_router(media_router)
+app.include_router(rates_router)                             # ← новый
 
 @app.get("/")
 async def root():

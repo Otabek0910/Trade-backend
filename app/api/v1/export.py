@@ -73,17 +73,17 @@ def build_sales_sheet(ws, db: Session, date_from: date, date_to: date):
     ws.freeze_panes = "A3"
 
     # Заголовок
-    ws.merge_cells("A1:I1")
+    ws.merge_cells("A1:L1")
     title = ws["A1"]
     title.value = f"📦 Продажи за период {date_from.strftime('%d.%m.%Y')} — {date_to.strftime('%d.%m.%Y')}"
     title.font = Font(bold=True, size=13, name="Arial", color="1A4B8C")
     title.alignment = CENTER
     ws.row_dimensions[1].height = 28
 
-    cols = ["№", "Дата", "Статус", "Клиент", "Товар", "Кол-во", "Цена продажи", "Сумма", "Оплачено", "Долг"]
-    widths = [5, 16, 12, 22, 30, 8, 16, 16, 16, 14]
+    cols = ["№", "Дата", "Статус", "Клиент", "Товар", "Бренд", "Ед.", "Кол-во", "Цена продажи", "Сумма", "Оплачено", "Долг"]
+    widths = [5, 16, 12, 22, 30, 18, 7, 8, 16, 16, 16, 14]
     header_row(ws, 2, cols, widths)
-    ws.merge_cells("A1:J1")
+    ws.merge_cells("A1:L1")
     ws.row_dimensions[2].height = 20
 
     sales = (
@@ -113,14 +113,20 @@ def build_sales_sheet(ws, db: Session, date_from: date, date_to: date):
                 status_cell.font = Font(name="Arial", size=10, color="E08030", bold=True)
             data_cell(ws, r, 4, sale.customer.name if sale.customer else "Розница")
             data_cell(ws, r, 5, item.product.name if item.product else "—")
-            data_cell(ws, r, 6, item.quantity, align=CENTER)
-            data_cell(ws, r, 7, float(item.selling_price), number_format='#,##0', align=RIGHT)
+            data_cell(ws, r, 6, item.product.brand or "—" if item.product else "—")
+            # Ед. изм с объёмом упаковки: "л (3)" для канистры 3л
+            unit_str = item.product.unit or "шт" if item.product else "шт"
+            if item.product and item.product.unit_value and item.product.unit != "шт":
+                unit_str = f"{item.product.unit} ({item.product.unit_value})"
+            data_cell(ws, r, 7, unit_str, align=CENTER)
+            data_cell(ws, r, 8, item.quantity, align=CENTER)
+            data_cell(ws, r, 9, float(item.selling_price), number_format='#,##0', align=RIGHT)
             item_total = float(item.selling_price) * item.quantity
-            data_cell(ws, r, 8, item_total, number_format='#,##0', align=RIGHT,
+            data_cell(ws, r, 10, item_total, number_format='#,##0', align=RIGHT,
                       font=Font(name="Arial", size=10, color="888888") if is_returned else GREEN_FONT)
-            data_cell(ws, r, 9, float(sale.paid_amount), number_format='#,##0', align=RIGHT)
+            data_cell(ws, r, 11, float(sale.paid_amount), number_format='#,##0', align=RIGHT)
 
-            debt_cell = data_cell(ws, r, 10, item_debt if item_debt > 0 else 0, number_format='#,##0', align=RIGHT)
+            debt_cell = data_cell(ws, r, 12, item_debt if item_debt > 0 else 0, number_format='#,##0', align=RIGHT)
             if item_debt > 0:
                 debt_cell.font = RED_FONT
             ws.row_dimensions[r].height = 18
@@ -143,13 +149,16 @@ def build_sales_sheet(ws, db: Session, date_from: date, date_to: date):
     ws.cell(row=r, column=1).value = "ИТОГО"
     ws.cell(row=r, column=1).font = SUBHEADER_FONT
     ws.cell(row=r, column=1).alignment = CENTER
-    ws.merge_cells(f"A{r}:G{r}")
+    ws.merge_cells(f"A{r}:I{r}")
+    for col in range(1, 13):
+        ws.cell(row=r, column=col).fill = SUBHEADER_FILL
+        ws.cell(row=r, column=col).border = thin_border()
 
-    data_cell(ws, r, 8, total_revenue, number_format='#,##0', align=RIGHT,
+    data_cell(ws, r, 10, total_revenue, number_format='#,##0', align=RIGHT,
               font=Font(bold=True, name="Arial", size=10, color="1A6B3C"), fill=SUBHEADER_FILL)
-    data_cell(ws, r, 9, total_paid, number_format='#,##0', align=RIGHT,
+    data_cell(ws, r, 11, total_paid, number_format='#,##0', align=RIGHT,
               font=Font(bold=True, name="Arial", size=10), fill=SUBHEADER_FILL)
-    data_cell(ws, r, 10, total_debt, number_format='#,##0', align=RIGHT,
+    data_cell(ws, r, 12, total_debt, number_format='#,##0', align=RIGHT,
               font=Font(bold=True, name="Arial", size=10, color="C0392B") if total_debt > 0 else Font(bold=True, name="Arial", size=10),
               fill=SUBHEADER_FILL)
 
@@ -167,8 +176,8 @@ def build_stock_sheet(ws, db: Session):
     title.alignment = CENTER
     ws.row_dimensions[1].height = 28
 
-    cols = ["SKU", "Название", "Категория", "Поставщик", "Цена закупки", "Цена продажи", "Маржа %", "Остаток"]
-    widths = [14, 32, 18, 22, 16, 16, 10, 10]
+    cols = ["SKU", "Название", "Бренд", "Категория", "Ед.", "Валюта", "Цена закупки", "Цена продажи", "Маржа %", "Остаток", "Мин.остаток"]
+    widths = [14, 32, 18, 18, 7, 8, 16, 16, 10, 10, 12]
     header_row(ws, 2, cols, widths)
     ws.row_dimensions[2].height = 20
 
@@ -180,17 +189,33 @@ def build_stock_sheet(ws, db: Session):
         low = p.current_stock <= p.min_stock
         row_fill = RED_FILL if low else None
 
+        # Единица с объёмом
+        unit_str = p.unit or "шт"
+        if p.unit_value and p.unit and p.unit != "шт":
+            unit_str = f"{p.unit} ({p.unit_value})"
+        # Валюта закупки
+        currency = getattr(p, 'purchase_currency', None) or 'uzs'
+        rate = getattr(p, 'purchase_rate', None)
+        currency_str = "USD" if currency == 'usd' else "UZS"
+        if currency == 'usd' and rate:
+            currency_str = f"USD ({float(rate):,.0f})"
+
         data_cell(ws, r, 1, p.sku, fill=row_fill)
         data_cell(ws, r, 2, p.name, fill=row_fill)
-        data_cell(ws, r, 3, p.category or "—", fill=row_fill)
-        data_cell(ws, r, 4, p.supplier.name if p.supplier else "—", fill=row_fill)
-        data_cell(ws, r, 5, float(p.purchase_price), number_format='#,##0', align=RIGHT, fill=row_fill)
-        data_cell(ws, r, 6, float(p.selling_price), number_format='#,##0', align=RIGHT, fill=row_fill)
-        data_cell(ws, r, 7, margin, number_format='0.0"%"', align=CENTER,
+        data_cell(ws, r, 3, p.brand or "—", fill=row_fill)
+        data_cell(ws, r, 4, p.category or "—", fill=row_fill)
+        data_cell(ws, r, 5, unit_str, align=CENTER, fill=row_fill)
+        curr_cell = data_cell(ws, r, 6, currency_str, align=CENTER, fill=row_fill)
+        if currency == 'usd':
+            curr_cell.font = Font(name="Arial", size=10, color="E08030", bold=True)
+        data_cell(ws, r, 7, float(p.purchase_price), number_format='#,##0', align=RIGHT, fill=row_fill)
+        data_cell(ws, r, 8, float(p.selling_price), number_format='#,##0', align=RIGHT, fill=row_fill)
+        data_cell(ws, r, 9, margin, number_format='0.0"%"', align=CENTER,
                   font=GREEN_FONT if margin >= 20 else NORMAL_FONT, fill=row_fill)
-        stock_cell = data_cell(ws, r, 8, p.current_stock, align=CENTER, fill=row_fill)
+        stock_cell = data_cell(ws, r, 10, p.current_stock, align=CENTER, fill=row_fill)
         if low:
             stock_cell.font = RED_FONT
+        data_cell(ws, r, 11, p.min_stock, align=CENTER, fill=row_fill)
         ws.row_dimensions[r].height = 18
         r += 1
 
@@ -199,13 +224,13 @@ def build_stock_sheet(ws, db: Session):
     ws.cell(row=r, column=1).value = "ИТОГО"
     ws.cell(row=r, column=1).font = SUBHEADER_FONT
     ws.cell(row=r, column=1).alignment = CENTER
-    ws.merge_cells(f"A{r}:G{r}")
-    for col in range(1, 9):
+    ws.merge_cells(f"A{r}:I{r}")
+    for col in range(1, 12):
         ws.cell(row=r, column=col).fill = SUBHEADER_FILL
         ws.cell(row=r, column=col).border = thin_border()
-    ws.cell(row=r, column=8).value = f'=SUM(H3:H{r-1})'
-    ws.cell(row=r, column=8).font = SUBHEADER_FONT
-    ws.cell(row=r, column=8).alignment = CENTER
+    ws.cell(row=r, column=10).value = f'=SUM(J3:J{r-1})'
+    ws.cell(row=r, column=10).font = SUBHEADER_FONT
+    ws.cell(row=r, column=10).alignment = CENTER
 
 
 # ─── Лист 3: Долги ───────────────────────────────────────────────
@@ -503,6 +528,47 @@ def db_backup(
     from app.core.config import settings
     import psycopg2
     from urllib.parse import urlparse
+    from decimal import Decimal as _Decimal
+    from datetime import datetime as _datetime, date as _date
+    import json as _json
+
+    def _escape(v) -> str:
+        """Безопасно сериализует любое значение в SQL-литерал."""
+        if v is None:
+            return "NULL"
+        if isinstance(v, bool):
+            return "TRUE" if v else "FALSE"
+        if isinstance(v, _Decimal):
+            return str(v)
+        if isinstance(v, (int, float)):
+            return str(v)
+        if isinstance(v, (_datetime,)):
+            return f"'{v.isoformat()}'"
+        if isinstance(v, _date):
+            return f"'{v.isoformat()}'"
+        if isinstance(v, dict):
+            escaped = _json.dumps(v, ensure_ascii=False).replace("'", "''")
+            return f"'{escaped}'"
+        # строка и всё остальное
+        escaped = str(v).replace("'", "''")
+        return f"'{escaped}'"
+
+    # Правильный порядок таблиц с учётом FK-зависимостей
+    TABLE_ORDER = [
+        "users",
+        "suppliers",
+        "customers",
+        "products",
+        "receipts",
+        "sales",
+        "sale_items",
+        "returns",
+        "expenses",
+        "debt_payments",
+        "supplier_payments",
+        "audit_log",
+        "exchange_rates",
+    ]
 
     try:
         parsed = urlparse(settings.DATABASE_URL)
@@ -516,46 +582,47 @@ def db_backup(
         conn.autocommit = True
         cur = conn.cursor()
 
-        lines = []
-        lines.append("-- Tradi backup\n")
-        lines.append("-- Generated by Python psycopg2\n\n")
-        lines.append("SET client_encoding = 'UTF8';\n")
-        lines.append("SET standard_conforming_strings = on;\n\n")
-
-        # Получаем все таблицы
+        # Все таблицы в БД
         cur.execute("""
             SELECT tablename FROM pg_tables
             WHERE schemaname = 'public'
-            ORDER BY tablename
         """)
-        tables = [r[0] for r in cur.fetchall()]
+        all_tables = {r[0] for r in cur.fetchall()}
+
+        # Сначала таблицы из нашего порядка, потом остальные (на случай новых)
+        ordered = [t for t in TABLE_ORDER if t in all_tables]
+        extra   = sorted(all_tables - set(ordered))
+        tables  = ordered + extra
+
+        lines = []
+        lines.append("-- Tradi DB backup\n")
+        lines.append(f"-- Date: {date.today().isoformat()}\n")
+        lines.append("-- Generated by Python psycopg2 (safe version)\n\n")
+        lines.append("SET client_encoding = 'UTF8';\n")
+        lines.append("SET standard_conforming_strings = on;\n\n")
+
+        # ── Начало транзакции ──────────────────────────────────────────────
+        lines.append("BEGIN;\n\n")
+
+        # Отключаем FK-проверки на время вставки
+        lines.append("SET session_replication_role = replica;\n\n")
 
         for table in tables:
-            lines.append(f"\n-- Table: {table}\n")
-            lines.append(f"DELETE FROM {table};\n")
-
             cur.execute(f"SELECT * FROM {table}")
             rows = cur.fetchall()
-            if not rows:
-                continue
-
             cols = [desc[0] for desc in cur.description]
             cols_str = ", ".join(cols)
 
+            lines.append(f"-- Table: {table} ({len(rows)} rows)\n")
+            lines.append(f"TRUNCATE TABLE {table} RESTART IDENTITY CASCADE;\n")
+
             for row in rows:
-                values = []
-                for v in row:
-                    if v is None:
-                        values.append("NULL")
-                    elif isinstance(v, bool):
-                        values.append("TRUE" if v else "FALSE")
-                    elif isinstance(v, (int, float)):
-                        values.append(str(v))
-                    else:
-                        escaped = str(v).replace("'", "''")
-                        values.append(f"'{escaped}'")
-                vals_str = ", ".join(values)
+                vals_str = ", ".join(_escape(v) for v in row)
                 lines.append(f"INSERT INTO {table} ({cols_str}) VALUES ({vals_str});\n")
+            lines.append("\n")
+
+        # Восстанавливаем FK-проверки
+        lines.append("SET session_replication_role = DEFAULT;\n\n")
 
         # Сбрасываем sequences
         cur.execute("""
@@ -565,7 +632,10 @@ def db_backup(
         for (seq,) in cur.fetchall():
             cur.execute(f"SELECT last_value FROM {seq}")
             last_val = cur.fetchone()[0]
-            lines.append(f"SELECT setval('{seq}', {last_val});\n")
+            lines.append(f"SELECT setval('{seq}', {last_val}, true);\n")
+
+        # ── Конец транзакции ───────────────────────────────────────────────
+        lines.append("\nCOMMIT;\n")
 
         cur.close()
         conn.close()
@@ -613,7 +683,7 @@ async def db_restore(
             host=parsed.hostname,
             port=parsed.port or 5432,
         )
-        conn.autocommit = True
+        conn.autocommit = False
         cur = conn.cursor()
 
         # Выполняем SQL построчно, пропускаем комментарии
@@ -655,7 +725,8 @@ def reset_all_data(
 
     tables = [
         "audit_log", "returns", "sale_items", "sales",
-        "receipts", "expenses", "products", "customers", "suppliers",
+        "receipts", "expenses", "debt_payments", "supplier_payments",
+        "exchange_rates", "products", "customers", "suppliers",
     ]
     for table in tables:
         try:

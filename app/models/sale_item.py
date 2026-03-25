@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, ForeignKey, Numeric
+from sqlalchemy import Column, Integer, ForeignKey, Numeric, String
 from sqlalchemy.orm import relationship
 from app.db.base import Base
 
@@ -11,6 +11,9 @@ class SaleItem(Base):
     quantity = Column(Integer, nullable=False)
     selling_price = Column(Numeric(12, 2), nullable=False)
     purchase_price_at_sale = Column(Numeric(12, 2), nullable=False)  # для точной маржи
-    
+    # ── Валюта закупки на момент продажи (фиксируется навсегда) ─────────────
+    purchase_currency    = Column(String(3), nullable=True, default='uzs')  # 'uzs' | 'usd'
+    purchase_rate_at_sale = Column(Numeric(12, 2), nullable=True)           # курс на момент закупки
+
     sale = relationship("Sale", back_populates="items")
     product = relationship("Product")

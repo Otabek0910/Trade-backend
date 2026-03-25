@@ -31,6 +31,10 @@ class SaleCreate(BaseModel):
     payment_type: PaymentType
     discount_percent: Decimal = Decimal("0")
     paid_amount: Decimal
+    # ── Курсы валют ──
+    cbu_rate: Optional[Decimal] = None        # курс ЦБУ на момент продажи
+    market_rate: Optional[Decimal] = None     # рыночный курс (если отличается от ЦБУ)
+    effective_rate: Optional[Decimal] = None  # фактический курс = market_rate ?? cbu_rate
 
 
 # ─── Endpoints ───────────────────────────────────────────────────
@@ -69,8 +73,11 @@ def create_sale(
         total = total * (1 - data.discount_percent / 100)
     total = total.quantize(Decimal("0.01"))
 
-    # Ограничиваем оплату — нельзя заплатить больше суммы
+    # Ограничиваем оплату
     actual_paid = min(data.paid_amount, total)
+
+    # Эффективный курс: market_rate если передан, иначе cbu_rate
+    effective_rate = data.effective_rate or data.market_rate or data.cbu_rate
 
     # Создаём продажу
     sale = Sale(
@@ -81,9 +88,13 @@ def create_sale(
         discount_percent=data.discount_percent,
         paid_amount=actual_paid,
         status=SaleStatus.completed,
+        # ── Курсы ──
+        cbu_rate=data.cbu_rate,
+        market_rate=data.market_rate,
+        effective_rate=effective_rate,
     )
     db.add(sale)
-    db.flush()  # получаем sale.id
+    db.flush()
 
     # Создаём позиции и списываем остатки
     for product, item in items_data:
@@ -93,6 +104,9 @@ def create_sale(
             quantity=item.quantity,
             selling_price=item.selling_price,
             purchase_price_at_sale=product.purchase_price,
+            # ── Фиксируем валюту закупки на момент продажи ──
+            purchase_currency=product.purchase_currency or 'uzs',
+            purchase_rate_at_sale=product.purchase_rate if product.purchase_currency == 'usd' else None,
         )
         db.add(sale_item)
         product.current_stock -= item.quantity
@@ -117,12 +131,15 @@ def create_sale(
             "debt": float(debt) if debt > 0 else 0,
             "customer_id": data.customer_id,
             "payment_type": data.payment_type.value,
+            "cbu_rate": float(data.cbu_rate) if data.cbu_rate else None,
+            "effective_rate": float(effective_rate) if effective_rate else None,
             "items": [
                 {
                     "product_id": p.id,
                     "product_name": p.name,
                     "quantity": i.quantity,
                     "selling_price": float(i.selling_price),
+                    "purchase_currency": p.purchase_currency or 'uzs',
                 }
                 for p, i in items_data
             ],
@@ -133,7 +150,7 @@ def create_sale(
     db.commit()
     db.refresh(sale)
 
-    # Уведомление подписчикам
+    # Уведомление
     _customer_name = "Розница"
     if data.customer_id:
         _cust = db.query(Customer).filter(Customer.id == data.customer_id).first()
@@ -143,7 +160,7 @@ def create_sale(
         notify_sale, db=db, seller_name=user.full_name,
         customer_name=_customer_name,
         total=float(total), items_count=len(data.items), sale_id=sale.id,
-    )  # не в async контексте
+    )
 
     return {
         "id": sale.id,
@@ -165,7 +182,6 @@ def get_sales(
     from sqlalchemy import func
     sales = db.query(Sale).order_by(Sale.created_at.desc()).limit(limit).all()
 
-    # Считаем возвраты по каждой продаже одним запросом
     sale_ids = [s.id for s in sales]
     returns_map: dict[int, float] = {}
     if sale_ids:
@@ -192,11 +208,14 @@ def get_sales(
             "discount_percent": float(s.discount_percent),
             "status": s.status.value,
             "items_count": len(s.items),
+            "cbu_rate": float(s.cbu_rate) if s.cbu_rate else None,
+            "effective_rate": float(s.effective_rate) if s.effective_rate else None,
             "items": [
                 {
                     "product_name": item.product.name if item.product else "—",
                     "quantity": item.quantity,
                     "selling_price": float(item.selling_price),
+                    "purchase_currency": item.purchase_currency or 'uzs',
                 }
                 for item in s.items
             ],
@@ -222,7 +241,6 @@ def get_today_stats(
     total_revenue = sum(float(s.total_amount) for s in sales)
     total_paid = sum(float(s.paid_amount) for s in sales)
 
-    # Считаем маржу
     margin = 0.0
     for s in sales:
         for item in s.items:

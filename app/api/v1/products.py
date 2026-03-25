@@ -34,6 +34,9 @@ class ProductCreate(BaseModel):
     selling_price: Decimal
     min_stock: int = 5
     current_stock: int = 0
+    # ── Валюта закупки ──
+    purchase_currency: Optional[str] = "uzs"   # 'uzs' | 'usd'
+    purchase_rate: Optional[Decimal] = None     # курс на момент закупки (если usd)
 
 
 class ProductUpdate(BaseModel):
@@ -46,11 +49,12 @@ class ProductUpdate(BaseModel):
     purchase_price: Optional[Decimal] = None
     selling_price: Optional[Decimal] = None
     min_stock: Optional[int] = None
+    # ── Валюта закупки ──
+    purchase_currency: Optional[str] = None
+    purchase_rate: Optional[Decimal] = None
 
 
 def product_to_dict(p: Product) -> dict:
-    from app.models.supplier import Supplier
-    from app.db.session import get_db as _get_db
     return {
         "id": p.id,
         "sku": p.sku,
@@ -68,6 +72,9 @@ def product_to_dict(p: Product) -> dict:
         "photo_url": p.photo_url,
         "low_stock": p.current_stock <= p.min_stock,
         "created_at": p.created_at.isoformat() if p.created_at else None,
+        # ── Валюта закупки ──
+        "purchase_currency": p.purchase_currency or "uzs",
+        "purchase_rate": float(p.purchase_rate) if p.purchase_rate else None,
     }
 
 
@@ -127,6 +134,10 @@ def create_product(
     if user.role not in (UserRole.developer, UserRole.owner_business, UserRole.storekeeper):
         raise HTTPException(status_code=403, detail="Нет доступа")
 
+    # Валидация: если USD — курс обязателен
+    if data.purchase_currency == "usd" and not data.purchase_rate:
+        raise HTTPException(status_code=400, detail="Укажите курс доллара на момент закупки")
+
     exists = db.query(Product).filter(Product.sku == data.sku).first()
     if exists:
         raise HTTPException(status_code=400, detail=f"Артикул «{data.sku}» уже занят")
@@ -154,10 +165,12 @@ def update_product(
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
 
-    # storekeeper не может менять цены
+    # storekeeper не может менять цены и валюту
     if user.role == UserRole.storekeeper:
         data.purchase_price = None
         data.selling_price = None
+        data.purchase_currency = None
+        data.purchase_rate = None
 
     for field, value in data.model_dump(exclude_none=True).items():
         setattr(p, field, value)
@@ -189,7 +202,6 @@ def delete_product(
             AuditLog.entity_id == product_id,
         ).delete(synchronize_session=False)
 
-        # Удаляем audit записи связанных продаж
         sale_items = db.query(SaleItem).filter(SaleItem.product_id == product_id).all()
         for si in sale_items:
             db.query(AuditLog).filter(
@@ -197,17 +209,13 @@ def delete_product(
                 AuditLog.entity_id == si.sale_id,
             ).delete(synchronize_session=False)
 
-        # Удаляем возвраты по этому товару
         db.query(Return).filter(Return.product_id == product_id).delete(
             synchronize_session=False
         )
-
-        # Удаляем позиции продаж
         db.query(SaleItem).filter(SaleItem.product_id == product_id).delete(
             synchronize_session=False
         )
 
-        # Удаляем продажи у которых больше нет ни одной позиции
         orphan_sale_ids = [sid for (sid,) in db.query(Sale.id).all()
                           if not db.query(SaleItem).filter(SaleItem.sale_id == sid).first()]
         if orphan_sale_ids:
@@ -219,7 +227,6 @@ def delete_product(
                 synchronize_session=False
             )
 
-        # Удаляем приёмки
         db.query(Receipt).filter(Receipt.product_id == product_id).delete(
             synchronize_session=False
         )
@@ -265,7 +272,6 @@ def upload_photo(
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    # Удаляем старое фото
     if p.photo_url:
         old_path = p.photo_url.replace("/static/", "uploads/", 1)
         if os.path.exists(old_path):

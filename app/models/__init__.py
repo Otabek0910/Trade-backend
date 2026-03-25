@@ -10,5 +10,6 @@ from .expense import Expense
 from .audit import AuditLog
 from app.models.debt_payment import DebtPayment
 from app.models.supplier_payment import SupplierPayment
+from app.models.exchange_rate import ExchangeRate
 
 __all__ = ["User", "Product", "Supplier", "Customer", "Receipt", "Sale", "SaleItem", "Return", "Expense", "AuditLog", "DebtPayment", "SupplierPayment"]
