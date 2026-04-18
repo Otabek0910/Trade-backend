@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 from decimal import Decimal
 from typing import Optional
@@ -14,6 +15,7 @@ from app.models.receipt import Receipt
 from app.models.return_model import Return
 from app.models.audit import AuditLog
 from app.models.user import User, UserRole
+from app.models.supplier_return import SupplierReturn   # ← добавлено
 from app.core.telegram_auth import get_current_user
 
 router = APIRouter(prefix="/products", tags=["Товары"])
@@ -134,7 +136,6 @@ def create_product(
     if user.role not in (UserRole.developer, UserRole.owner_business, UserRole.storekeeper):
         raise HTTPException(status_code=403, detail="Нет доступа")
 
-    # Валидация: если USD — курс обязателен
     if data.purchase_currency == "usd" and not data.purchase_rate:
         raise HTTPException(status_code=400, detail="Укажите курс доллара на момент закупки")
 
@@ -165,7 +166,6 @@ def update_product(
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
 
-    # storekeeper не может менять цены и валюту
     if user.role == UserRole.storekeeper:
         data.purchase_price = None
         data.selling_price = None
@@ -231,9 +231,15 @@ def delete_product(
             synchronize_session=False
         )
 
+        # ── Удаляем возвраты поставщику для этого товара ────────────────────
+        db.query(SupplierReturn).filter(
+            SupplierReturn.product_id == product_id
+        ).delete(synchronize_session=False)
+
         db.delete(p)
         db.commit()
         return {"deleted": True, "hard": True}
+
     else:
         # Владелец: удаление только если нет истории продаж
         has_sales = db.query(SaleItem).filter(SaleItem.product_id == product_id).first()
@@ -242,6 +248,12 @@ def delete_product(
                 status_code=400,
                 detail="Нельзя удалить товар с историей продаж. Обратитесь к разработчику."
             )
+
+        # ── Удаляем возвраты поставщику ──────────────────────────────────────
+        db.query(SupplierReturn).filter(
+            SupplierReturn.product_id == product_id
+        ).delete(synchronize_session=False)
+
         db.query(Receipt).filter(Receipt.product_id == product_id).delete(
             synchronize_session=False
         )

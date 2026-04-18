@@ -10,7 +10,7 @@ app/api/v1/dashboard.py
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func, cast, Date, and_
+from sqlalchemy import func, cast, Date, and_, distinct
 from datetime import date, timedelta
 
 from app.db.session import get_db
@@ -257,7 +257,6 @@ def get_dashboard(
     )
 
     # Продавцы — за текущий месяц
-    from sqlalchemy import distinct
     seller_stats_raw = (
         db.query(
             User,
@@ -353,21 +352,20 @@ def get_dashboard(
         ],
         "seller_stats": [
             {
-                "name": s.full_name,
-                "sales_count": int(s.sales_count),
-                "revenue": round(float(s.revenue or 0) - seller_returns.get(s.id, 0), 0),
-                "paid": round(seller_net_paid.get(s.id, 0.0), 0),
+                "name": row[0].full_name,
+                "sales_count": int(row.sales_count),
+                "revenue": round(float(row.revenue or 0) - seller_returns.get(row[0].id, 0), 0),
+                "paid": round(seller_net_paid.get(row[0].id, 0.0), 0),
                 "debt": round(
-                    float(s.revenue or 0) - seller_returns.get(s.id, 0) - seller_net_paid.get(s.id, 0.0), 0
+                    float(row.revenue or 0) - seller_returns.get(row[0].id, 0) - seller_net_paid.get(row[0].id, 0.0), 0
                 ),
             }
-            for s in seller_stats_raw
+            for row in seller_stats_raw
         ],
         "returns_month_total": round(returns_month_total, 0),
         "cash_alltime": round(cash_alltime, 0),
         "total_customer_debt": round(total_customer_debt, 0),
         "total_supplier_debt": round(total_supplier_debt, 0),
-        "total_supplier_credit": round(float(db.query(func.sum(Supplier.total_credit)).scalar() or 0), 0),
         "stock_value": round(stock_value, 0),
         "low_stock_count": db.query(Product).filter(Product.current_stock <= Product.min_stock).count(),
         "low_stock_items": [
