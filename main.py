@@ -13,7 +13,8 @@ from app.models import (
     Receipt, Sale, SaleItem, Return,
     Expense, AuditLog, SupplierPayment
 )
-from app.models.exchange_rate import ExchangeRate  # ← новая модель
+from app.models.exchange_rate import ExchangeRate      # курсы валют
+from app.models.supplier_return import SupplierReturn  # ← возвраты поставщикам
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -74,7 +75,7 @@ async def lifespan(app: FastAPI):
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )""",
 
-            # ── НОВЫЕ: таблица курсов ЦБУ ───────────────────────────────────
+            # ── Курсы ЦБУ ───────────────────────────────────────────────────
             """CREATE TABLE IF NOT EXISTS exchange_rates (
                 id         SERIAL PRIMARY KEY,
                 date       DATE NOT NULL UNIQUE,
@@ -82,18 +83,34 @@ async def lifespan(app: FastAPI):
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )""",
 
-            # ── НОВЫЕ: валюта закупки в товарах ────────────────────────────
+            # ── Валюта закупки в товарах ────────────────────────────────────
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_currency VARCHAR(3) DEFAULT 'uzs'",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS purchase_rate NUMERIC(12,2)",
 
-            # ── НОВЫЕ: курсы в продажах ─────────────────────────────────────
+            # ── Курсы в продажах ─────────────────────────────────────────────
             "ALTER TABLE sales ADD COLUMN IF NOT EXISTS cbu_rate NUMERIC(12,2)",
             "ALTER TABLE sales ADD COLUMN IF NOT EXISTS market_rate NUMERIC(12,2)",
             "ALTER TABLE sales ADD COLUMN IF NOT EXISTS effective_rate NUMERIC(12,2)",
 
-            # ── НОВЫЕ: валюта закупки в позициях продажи ────────────────────
+            # ── Валюта закупки в позициях продажи ────────────────────────────
             "ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS purchase_currency VARCHAR(3) DEFAULT 'uzs'",
             "ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS purchase_rate_at_sale NUMERIC(12,2)",
+
+            # ── Возвраты поставщикам ─────────────────────────────────────────
+            "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS total_credit NUMERIC(12,2) NOT NULL DEFAULT 0",
+            """CREATE TABLE IF NOT EXISTS supplier_returns (
+                id             SERIAL PRIMARY KEY,
+                supplier_id    INTEGER NOT NULL REFERENCES suppliers(id),
+                product_id     INTEGER NOT NULL REFERENCES products(id),
+                quantity       INTEGER NOT NULL,
+                purchase_price NUMERIC(12,2) NOT NULL,
+                return_amount  NUMERIC(12,2) NOT NULL,
+                debt_reduced   NUMERIC(12,2) NOT NULL DEFAULT 0,
+                credit_added   NUMERIC(12,2) NOT NULL DEFAULT 0,
+                reason         TEXT,
+                created_by     INTEGER NOT NULL REFERENCES users(id),
+                created_at     TIMESTAMPTZ DEFAULT NOW()
+            )""",
         ]
 
         with engine.connect() as conn:
@@ -166,7 +183,8 @@ from app.api.v1.expenses import router as expenses_router
 from app.api.v1.returns import router as returns_router
 from app.api.v1.audit import router as audit_router
 from app.api.v1.media import router as media_router
-from app.api.v1.rates import router as rates_router          # ← новый
+from app.api.v1.rates import router as rates_router
+from app.api.v1.supplier_returns import router as supplier_returns_router  # ← возвраты
 
 app.include_router(auth_router)
 app.include_router(protected_router)
@@ -183,7 +201,8 @@ app.include_router(expenses_router)
 app.include_router(returns_router)
 app.include_router(audit_router)
 app.include_router(media_router)
-app.include_router(rates_router)                             # ← новый
+app.include_router(rates_router)
+app.include_router(supplier_returns_router)  # ← возвраты
 
 @app.get("/")
 async def root():

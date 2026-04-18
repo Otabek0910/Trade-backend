@@ -70,6 +70,7 @@ def supplier_to_dict(s: Supplier, db: Session) -> dict:
         "total_receipts": total_receipts,
         "total_purchased": float(total_purchased),
         "total_debt": float(getattr(s, 'total_debt', 0) or 0),
+        "total_credit": float(getattr(s, 'total_credit', 0) or 0),  # ← поставщик должен нам
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }
 
@@ -185,6 +186,56 @@ def pay_supplier_debt(
     return {
         "message": f"✅ Оплачено {amount:,.0f} сум. Остаток долга: {float(s.total_debt):,.0f} сум",
         "total_debt": float(s.total_debt),
+        "payment_id": payment.id,
+    }
+
+
+@router.post("/{supplier_id}/pay-credit")
+def receive_credit_from_supplier(
+    supplier_id: int,
+    data: PayDebtSchema,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """
+    Поставщик возвращает нам деньги (погашение кредита).
+    Кредит возникает когда мы вернули товар на сумму больше нашего долга.
+    """
+    s = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+    if not s:
+        raise HTTPException(status_code=404, detail="Поставщик не найден")
+
+    current_credit = float(getattr(s, 'total_credit', 0) or 0)
+    amount = float(data.amount)
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Сумма должна быть больше 0")
+    if amount > current_credit + 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Сумма превышает кредит поставщика ({current_credit:,.0f} сум)"
+        )
+
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    s.total_credit = max(0.0, round(current_credit - amount, 2))
+
+    # Логируем в supplier_payments с пометкой 💚
+    payment = SupplierPayment(
+        supplier_id=supplier_id,
+        amount=amount,
+        note=f"💚 Получено от поставщика (зачёт кредита){': ' + data.note if data.note else ''}",
+        created_by=user.id,
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(s)
+
+    return {
+        "message": f"✅ Получено {amount:,.0f} сум от поставщика. Остаток кредита: {float(s.total_credit):,.0f} сум",
+        "total_credit": float(s.total_credit),
         "payment_id": payment.id,
     }
 
