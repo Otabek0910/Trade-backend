@@ -166,3 +166,58 @@ def get_supplier_returns(
         }
         for r, prod_name, unit, unit_value, creator_name in rows
     ]
+
+@router.delete("/{return_id}")
+def revert_supplier_return(
+    return_id: int,
+    db: Session = Depends(get_db),
+    telegram_id: int = Depends(get_current_user),
+):
+    """
+    Отмена возврата поставщику — полный откат:
+    1. Возвращает товар на склад
+    2. Восстанавливает долг поставщику (если был уменьшен)
+    3. Убирает кредит поставщика (если был начислен)
+    4. Удаляет запись из supplier_returns
+    """
+    ret = db.query(SupplierReturn).filter(SupplierReturn.id == return_id).first()
+    if not ret:
+        raise HTTPException(status_code=404, detail="Возврат не найден")
+ 
+    product  = db.query(Product).filter(Product.id == ret.product_id).first()
+    supplier = db.query(Supplier).filter(Supplier.id == ret.supplier_id).first()
+ 
+    if not product or not supplier:
+        raise HTTPException(status_code=404, detail="Товар или поставщик не найден")
+ 
+    debt_reduced  = float(ret.debt_reduced  or 0)
+    credit_added  = float(ret.credit_added  or 0)
+    quantity      = ret.quantity
+ 
+    # ── 1. Возвращаем товар на склад ──────────────────────────────────────────
+    product.current_stock += quantity
+ 
+    # ── 2. Восстанавливаем долг поставщику ───────────────────────────────────
+    if debt_reduced > 0:
+        supplier.total_debt = round(float(supplier.total_debt or 0) + debt_reduced, 2)
+ 
+    # ── 3. Убираем кредит поставщика ──────────────────────────────────────────
+    if credit_added > 0:
+        supplier.total_credit = max(0.0, round(float(supplier.total_credit or 0) - credit_added, 2))
+ 
+    # ── 4. Удаляем запись ─────────────────────────────────────────────────────
+    db.delete(ret)
+    db.commit()
+ 
+    parts = [f"✅ Возврат отменён. На склад вернулось {quantity} шт."]
+    if debt_reduced > 0:
+        parts.append(f"Долг поставщику восстановлен на {debt_reduced:,.0f} сум.")
+    if credit_added > 0:
+        parts.append(f"Кредит поставщика уменьшен на {credit_added:,.0f} сум.")
+ 
+    return {
+        "message": " ".join(parts),
+        "new_stock": product.current_stock,
+        "new_total_debt":   float(supplier.total_debt),
+        "new_total_credit": float(supplier.total_credit or 0),
+    }

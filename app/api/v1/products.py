@@ -16,6 +16,7 @@ from app.models.return_model import Return
 from app.models.audit import AuditLog
 from app.models.user import User, UserRole
 from app.models.supplier_return import SupplierReturn   # ← добавлено
+from app.models.supplier import Supplier                 # ← добавлено
 from app.core.telegram_auth import get_current_user
 
 router = APIRouter(prefix="/products", tags=["Товары"])
@@ -231,10 +232,19 @@ def delete_product(
             synchronize_session=False
         )
 
-        # ── Удаляем возвраты поставщику для этого товара ────────────────────
-        db.query(SupplierReturn).filter(
+        # ── Удаляем возвраты поставщику + откатываем баланс поставщика ────────
+        sup_returns = db.query(SupplierReturn).filter(
             SupplierReturn.product_id == product_id
-        ).delete(synchronize_session=False)
+        ).all()
+        for sr in sup_returns:
+            sup = db.query(Supplier).filter(Supplier.id == sr.supplier_id).first()
+            if sup:
+                if float(sr.debt_reduced or 0) > 0:
+                    sup.total_debt = round(float(sup.total_debt or 0) + float(sr.debt_reduced), 2)
+                if float(sr.credit_added or 0) > 0:
+                    sup.total_credit = max(0.0, round(float(sup.total_credit or 0) - float(sr.credit_added), 2))
+            db.delete(sr)
+        db.flush()
 
         db.delete(p)
         db.commit()
@@ -249,10 +259,19 @@ def delete_product(
                 detail="Нельзя удалить товар с историей продаж. Обратитесь к разработчику."
             )
 
-        # ── Удаляем возвраты поставщику ──────────────────────────────────────
-        db.query(SupplierReturn).filter(
+        # ── Удаляем возвраты поставщику + откатываем баланс поставщика ────────
+        sup_returns = db.query(SupplierReturn).filter(
             SupplierReturn.product_id == product_id
-        ).delete(synchronize_session=False)
+        ).all()
+        for sr in sup_returns:
+            sup = db.query(Supplier).filter(Supplier.id == sr.supplier_id).first()
+            if sup:
+                if float(sr.debt_reduced or 0) > 0:
+                    sup.total_debt = round(float(sup.total_debt or 0) + float(sr.debt_reduced), 2)
+                if float(sr.credit_added or 0) > 0:
+                    sup.total_credit = max(0.0, round(float(sup.total_credit or 0) - float(sr.credit_added), 2))
+            db.delete(sr)
+        db.flush()
 
         db.query(Receipt).filter(Receipt.product_id == product_id).delete(
             synchronize_session=False
