@@ -185,6 +185,7 @@ from app.api.v1.audit import router as audit_router
 from app.api.v1.media import router as media_router
 from app.api.v1.rates import router as rates_router
 from app.api.v1.supplier_returns import router as supplier_returns_router  # ← возвраты
+from app.api.v1.pdf_report import router as pdf_report_router
 
 app.include_router(auth_router)
 app.include_router(protected_router)
@@ -203,7 +204,7 @@ app.include_router(audit_router)
 app.include_router(media_router)
 app.include_router(rates_router)
 app.include_router(supplier_returns_router)  # ← возвраты
-
+app.include_router(pdf_report_router)
 @app.get("/")
 async def root():
     return {"status": "✅ Работает!"}
