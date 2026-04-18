@@ -11,6 +11,7 @@ from app.models.supplier import Supplier
 from app.models.product import Product
 from app.models.receipt import Receipt
 from app.models.supplier_payment import SupplierPayment
+from app.models.supplier_return import SupplierReturn
 from app.models.user import User
 from app.core.telegram_auth import get_current_user
 from app.core.telegram_media import upload_photo_to_telegram
@@ -53,9 +54,35 @@ def _resolve_photo(url: str | None) -> str | None:
 def supplier_to_dict(s: Supplier, db: Session) -> dict:
     products_count = db.query(func.count(Product.id)).filter(Product.supplier_id == s.id).scalar() or 0
     total_receipts = db.query(func.count(Receipt.id)).filter(Receipt.supplier_id == s.id).scalar() or 0
-    total_purchased = db.query(
-        func.sum(Receipt.purchase_price * Receipt.quantity)
+
+    # ── Закуплено = сумма (paid_amount + debt) по всем приёмкам ──────────────
+    # paid_amount и debt всегда в СУМАХ, поэтому правильно для USD и UZS товаров
+    total_purchased_raw = db.query(
+        func.sum(Receipt.paid_amount + Receipt.debt)
     ).filter(Receipt.supplier_id == s.id).scalar() or 0
+
+    # ── Возвраты поставщику — вычитаем из закуплено ───────────────────────────
+    total_returned = db.query(
+        func.sum(SupplierReturn.return_amount)
+    ).filter(SupplierReturn.supplier_id == s.id).scalar() or 0
+
+    # Закуплено нетто = брутто − возвраты
+    total_purchased_net = float(total_purchased_raw) - float(total_returned)
+
+    # ── Оплачено поставщику ───────────────────────────────────────────────────
+    # = сумма paid_amount по приёмкам + доп.платежи − платежи типа "получено кредит"
+    paid_from_receipts = db.query(
+        func.sum(Receipt.paid_amount)
+    ).filter(Receipt.supplier_id == s.id).scalar() or 0
+
+    extra_payments = db.query(
+        func.sum(SupplierPayment.amount)
+    ).filter(
+        SupplierPayment.supplier_id == s.id,
+        ~SupplierPayment.note.like('%💚%')  # исключаем "получено от поставщика"
+    ).scalar() or 0
+
+    total_paid = float(paid_from_receipts) + float(extra_payments)
 
     return {
         "id": s.id,
@@ -66,11 +93,13 @@ def supplier_to_dict(s: Supplier, db: Session) -> dict:
         "photo_url": _resolve_photo(getattr(s, 'photo_url', None)),
         "lat": getattr(s, 'lat', None),
         "lng": getattr(s, 'lng', None),
-        "products_count": products_count,
-        "total_receipts": total_receipts,
-        "total_purchased": float(total_purchased),
-        "total_debt": float(getattr(s, 'total_debt', 0) or 0),
-        "total_credit": float(getattr(s, 'total_credit', 0) or 0),  # ← поставщик должен нам
+        "products_count":    products_count,
+        "total_receipts":    total_receipts,
+        "total_purchased":   round(total_purchased_net, 0),   # нетто (−возвраты)
+        "total_returned":    round(float(total_returned), 0), # сколько вернули
+        "total_paid":        round(total_paid, 0),            # сколько реально заплатили
+        "total_debt":        float(getattr(s, 'total_debt',   0) or 0),
+        "total_credit":      float(getattr(s, 'total_credit', 0) or 0),
         "created_at": s.created_at.isoformat() if s.created_at else None,
     }
 
