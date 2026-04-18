@@ -141,7 +141,12 @@ def get_supplier_returns(
 ):
     """История возвратов по поставщику"""
     rows = (
-        db.query(SupplierReturn, Product.name, Product.unit, Product.unit_value, User.full_name)
+        db.query(
+            SupplierReturn,
+            Product.name, Product.sku, Product.brand, Product.category,
+            Product.unit, Product.unit_value, Product.current_stock,
+            User.full_name,
+        )
         .join(Product, SupplierReturn.product_id == Product.id)
         .join(User, SupplierReturn.created_by == User.id)
         .filter(SupplierReturn.supplier_id == supplier_id)
@@ -151,73 +156,22 @@ def get_supplier_returns(
     )
     return [
         {
-            "id":             r.id,
-            "product_name":   prod_name,
-            "unit":           unit or "шт",
-            "unit_value":     unit_value,
-            "quantity":       r.quantity,
-            "purchase_price": float(r.purchase_price),
-            "return_amount":  float(r.return_amount),
-            "debt_reduced":   float(r.debt_reduced),
-            "credit_added":   float(r.credit_added),
-            "reason":         r.reason,
-            "creator_name":   creator_name,
-            "created_at":     r.created_at.isoformat(),
+            "id":               r.id,
+            "product_name":     prod_name,
+            "product_sku":      prod_sku,
+            "product_brand":    prod_brand,
+            "product_category": prod_category,
+            "unit":             unit or "шт",
+            "unit_value":       unit_value,
+            "current_stock":    current_stock,
+            "quantity":         r.quantity,
+            "purchase_price":   float(r.purchase_price),
+            "return_amount":    float(r.return_amount),
+            "debt_reduced":     float(r.debt_reduced),
+            "credit_added":     float(r.credit_added),
+            "reason":           r.reason,
+            "creator_name":     creator_name,
+            "created_at":       r.created_at.isoformat(),
         }
-        for r, prod_name, unit, unit_value, creator_name in rows
+        for r, prod_name, prod_sku, prod_brand, prod_category, unit, unit_value, current_stock, creator_name in rows
     ]
-
-@router.delete("/{return_id}")
-def revert_supplier_return(
-    return_id: int,
-    db: Session = Depends(get_db),
-    telegram_id: int = Depends(get_current_user),
-):
-    """
-    Отмена возврата поставщику — полный откат:
-    1. Возвращает товар на склад
-    2. Восстанавливает долг поставщику (если был уменьшен)
-    3. Убирает кредит поставщика (если был начислен)
-    4. Удаляет запись из supplier_returns
-    """
-    ret = db.query(SupplierReturn).filter(SupplierReturn.id == return_id).first()
-    if not ret:
-        raise HTTPException(status_code=404, detail="Возврат не найден")
- 
-    product  = db.query(Product).filter(Product.id == ret.product_id).first()
-    supplier = db.query(Supplier).filter(Supplier.id == ret.supplier_id).first()
- 
-    if not product or not supplier:
-        raise HTTPException(status_code=404, detail="Товар или поставщик не найден")
- 
-    debt_reduced  = float(ret.debt_reduced  or 0)
-    credit_added  = float(ret.credit_added  or 0)
-    quantity      = ret.quantity
- 
-    # ── 1. Возвращаем товар на склад ──────────────────────────────────────────
-    product.current_stock += quantity
- 
-    # ── 2. Восстанавливаем долг поставщику ───────────────────────────────────
-    if debt_reduced > 0:
-        supplier.total_debt = round(float(supplier.total_debt or 0) + debt_reduced, 2)
- 
-    # ── 3. Убираем кредит поставщика ──────────────────────────────────────────
-    if credit_added > 0:
-        supplier.total_credit = max(0.0, round(float(supplier.total_credit or 0) - credit_added, 2))
- 
-    # ── 4. Удаляем запись ─────────────────────────────────────────────────────
-    db.delete(ret)
-    db.commit()
- 
-    parts = [f"✅ Возврат отменён. На склад вернулось {quantity} шт."]
-    if debt_reduced > 0:
-        parts.append(f"Долг поставщику восстановлен на {debt_reduced:,.0f} сум.")
-    if credit_added > 0:
-        parts.append(f"Кредит поставщика уменьшен на {credit_added:,.0f} сум.")
- 
-    return {
-        "message": " ".join(parts),
-        "new_stock": product.current_stock,
-        "new_total_debt":   float(supplier.total_debt),
-        "new_total_credit": float(supplier.total_credit or 0),
-    }
